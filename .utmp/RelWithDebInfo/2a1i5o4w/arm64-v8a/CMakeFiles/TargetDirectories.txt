@@ -1,0 +1,5 @@
+D:/dev/EasyAR_WebRequest_TestTask/.utmp/RelWithDebInfo/2a1i5o4w/arm64-v8a/CMakeFiles/edit_cache.dir
+D:/dev/EasyAR_WebRequest_TestTask/.utmp/RelWithDebInfo/2a1i5o4w/arm64-v8a/CMakeFiles/rebuild_cache.dir
+D:/dev/EasyAR_WebRequest_TestTask/.utmp/RelWithDebInfo/2a1i5o4w/arm64-v8a/FramePacing/CMakeFiles/swappywrapper.dir
+D:/dev/EasyAR_WebRequest_TestTask/.utmp/RelWithDebInfo/2a1i5o4w/arm64-v8a/FramePacing/CMakeFiles/edit_cache.dir
+D:/dev/EasyAR_WebRequest_TestTask/.utmp/RelWithDebInfo/2a1i5o4w/arm64-v8a/FramePacing/CMakeFiles/rebuild_cache.dir
