@@ -6,9 +6,10 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
-    path: Assets/Samples/EasyAR Sense Unity Plugin/4.6.2+3022.b15d4240/__ObjectSensing
-      All__/MultiTarget_MultiTracker/Scenes/MultiTarget_MultiTracker.unity
-    guid: c97ae6e3fd841f8408b2b88c6c70b64d
+    path: Assets/Scenes/ImageDownMain.unity
+    guid: 49c89615304e77c40a8d215bfe86d0da
+  - enabled: 1
+    path: Assets/Scenes/TargetImage.unity
+    guid: 31c57c1ee0091f14f90a467ee6f7e5fb
   m_configObjects:
     EasyAR.Settings: {fileID: 11400000, guid: a1173800ca069ae47b8ae2cb65c0f457, type: 2}
-  m_UseUCBPForAssetBundles: 0

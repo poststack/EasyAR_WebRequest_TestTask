@@ -1,10 +1,16 @@
 ﻿using UnityEngine;
 using System.IO;
 using System.Collections.Generic;
+using easyar;
 
 public class ImageLoader : MonoBehaviour
 {
 	public List<string> imageNames = new List<string>();
+	
+	[SerializeField]
+	private ImageTargetController TargetPrefab;
+	[SerializeField]
+	private ImageTrackerFrameFilter imageTrackerFrameFilter;
 
 	void Start()
 	{
@@ -29,6 +35,9 @@ public class ImageLoader : MonoBehaviour
 		foreach (string imageName in imageNames)
 		{
 			Debug.Log("Image name: " + imageName);
+			var targetPrefab = Instantiate(TargetPrefab,gameObject.transform);
+			targetPrefab.ImageFileSource.Path = imageName + ".png";
+			targetPrefab.Tracker = imageTrackerFrameFilter;
 		}
 	}
 }

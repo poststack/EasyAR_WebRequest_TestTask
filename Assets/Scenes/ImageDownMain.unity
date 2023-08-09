@@ -514,8 +514,6 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 528410857}
-  - component: {fileID: 528410856}
-  - component: {fileID: 528410858}
   - component: {fileID: 528410859}
   - component: {fileID: 528410860}
   - component: {fileID: 528410861}
@@ -526,18 +524,6 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &528410856
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 528410855}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: f6f1ba0c9bf1a744a9ae63f5a1d9201e, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
 --- !u!4 &528410857
 Transform:
   m_ObjectHideFlags: 0
@@ -553,28 +539,6 @@ Transform:
   m_Father: {fileID: 0}
   m_RootOrder: 2
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &528410858
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 528410855}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: f34ac7de80902df46920535537a02805, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  _downloadOnStart: 1
-  _downloadPath: 
-  DownloadPath: 
-  _abandonOnFailure: 0
-  MaxConcurency: 1
-  _pendingUrls:
-  - https://user74522.clients-cdnnow.ru/static/uploads/mrk6440mark.png
-  _uriToFilenames:
-  - URI: https://user74522.clients-cdnnow.ru/static/uploads/mrk6440mark.png
-    Filename: sdsd.jpg
 --- !u!114 &528410859
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -611,10 +575,11 @@ MonoBehaviour:
   m_GameObject: {fileID: 528410855}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 479e55c3794aa544aa6827b64b2803b0, type: 3}
+  m_Script: {fileID: 11500000, guid: 06c3aa75e34fb0646a9ac991b1f58b6e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  imageNames: []
+  button: {fileID: 1753353551}
+  scenenameToGo: TargetImage
 --- !u!1 &904968813
 GameObject:
   m_ObjectHideFlags: 0
@@ -1011,7 +976,19 @@ MonoBehaviour:
   m_TargetGraphic: {fileID: 1753353552}
   m_OnClick:
     m_PersistentCalls:
-      m_Calls: []
+      m_Calls:
+      - m_Target: {fileID: 528410861}
+        m_TargetAssemblyTypeName: ButtonHandler, Assembly-CSharp
+        m_MethodName: OnButtonClick
+        m_Mode: 1
+        m_Arguments:
+          m_ObjectArgument: {fileID: 0}
+          m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
+          m_IntArgument: 0
+          m_FloatArgument: 0
+          m_StringArgument: 
+          m_BoolArgument: 0
+        m_CallState: 2
 --- !u!114 &1753353552
 MonoBehaviour:
   m_ObjectHideFlags: 0

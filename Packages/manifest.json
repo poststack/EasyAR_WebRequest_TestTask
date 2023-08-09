@@ -1,6 +1,7 @@
 {
   "dependencies": {
     "com.easyar.sense": "file:D:/GoDown/com.easyar.sense-4.6.2+3022.b15d4240.tgz",
+    "com.siccity.gltfutility": "https://github.com/Siccity/GLTFUtility.git",
     "com.unity.collab-proxy": "2.0.5",
     "com.unity.textmeshpro": "3.0.6",
     "com.unity.timeline": "1.8.2",
