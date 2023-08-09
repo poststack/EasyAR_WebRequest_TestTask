@@ -1,9 +1,9 @@
 ﻿/* SCRIPT INSPECTOR 3
- * version 3.0.26, February 2020
- * Copyright © 2012-2020, Flipbook Games
+ * version 3.0.33, May 2022
+ * Copyright © 2012-2022, Flipbook Games
  * 
- * Unity's legendary editor for C#, UnityScript, Boo, Shaders, and text,
- * now transformed into an advanced C# IDE!!!
+ * Script Inspector 3 - World's Fastest IDE for Unity
+ * 
  * 
  * Follow me on http://twitter.com/FlipbookGames
  * Like Flipbook Games on Facebook http://facebook.com/FlipbookGames
@@ -389,14 +389,14 @@ public class FGTextBuffer : ScriptableObject
 			return;
 		assetPath = assetPathFromGuid;
 			
-		isJsFile = assetPath.EndsWith(".js", System.StringComparison.OrdinalIgnoreCase);
-		isCsFile = assetPath.EndsWith(".cs", System.StringComparison.OrdinalIgnoreCase);
-		isBooFile = assetPath.EndsWith(".boo", System.StringComparison.OrdinalIgnoreCase);
-		isShader = assetPath.EndsWith(".shader", System.StringComparison.OrdinalIgnoreCase) ||
-			assetPath.EndsWith(".cg", System.StringComparison.OrdinalIgnoreCase) ||
-			assetPath.EndsWith(".cginc", System.StringComparison.OrdinalIgnoreCase) ||
-			assetPath.EndsWith(".hlsl", System.StringComparison.OrdinalIgnoreCase) ||
-			assetPath.EndsWith(".hlslinc", System.StringComparison.OrdinalIgnoreCase);
+		isJsFile = assetPath.EndsWithJS();
+		isCsFile = assetPath.EndsWithCS();
+		isBooFile = assetPath.EndsWithBoo();
+		isShader = assetPath.EndsWithIgnoreCase(".shader") ||
+			assetPath.EndsWithIgnoreCase(".cg") ||
+			assetPath.EndsWithIgnoreCase(".cginc") ||
+			assetPath.EndsWithIgnoreCase(".hlsl") ||
+			assetPath.EndsWithIgnoreCase(".hlslinc");
 		isText = !(isJsFile || isCsFile || isBooFile || isShader);
 		
 		styles = FGTextEditor.GetStyles(isText);
@@ -486,7 +486,7 @@ public class FGTextBuffer : ScriptableObject
 			justSavedNow = lastModifiedTime == this.lastModifiedTime;
 		} catch {}
 		
-		needsReload = needsReload || !justSavedNow;
+		needsReload = needsReload && !justSavedNow;
 		EditorApplication.update -= ReloadOnNextUpdate;
 		EditorApplication.update += ReloadOnNextUpdate;
 	}
@@ -523,7 +523,7 @@ public class FGTextBuffer : ScriptableObject
 				{
 					needsReload = false;
 
-					savedAtUndoPosition = 0;
+					savedAtUndoPosition = -1;
 					UpdateViews();
 					return;
 				}
@@ -725,7 +725,7 @@ public class FGTextBuffer : ScriptableObject
 		}
 	}
 
-	private void ValidateCarets()
+	public void ValidateCarets()
 	{
 		foreach (FGTextEditor editor in editors)
 			editor.ValidateCarets();
@@ -1096,7 +1096,7 @@ public class FGTextBuffer : ScriptableObject
 			return 0;
 		if (c >= '0' && c <= '9')
 			return 1;
-		if (c == '_' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z')
+		if (c == '_' || char.IsLetter(c))
 			return digitsAsLetters ? 1 : 2;
 		return ignorePunctuations ? 0 : 3;
 	}
@@ -1202,10 +1202,12 @@ public class FGTextBuffer : ScriptableObject
 					}
 					if (prevChar == '_' && thisChar != '_')
 						break;
-					if (thisChar >= 'A' && thisChar <= 'Z' && (prevChar < 'A' || prevChar > 'Z'))
+					var isThisUpper = char.IsUpper(thisChar);
+					var isPrevUpper = char.IsUpper(prevChar);
+					if (isThisUpper && !isPrevUpper)
 						break;
 					--column;
-					if (prevChar >= 'A' && prevChar <= 'Z' && (thisChar < 'A' || thisChar > 'Z'))
+					if (isPrevUpper && !isThisUpper)
 						break;
 					thisChar = prevChar;
 				}
@@ -1289,7 +1291,10 @@ public class FGTextBuffer : ScriptableObject
 						}
 						else
 						{
-							if ((thisChar < 'A' || thisChar > 'Z') && thisChar != '_' && nextChar >= 'A' && nextChar <= 'Z')
+							var isThisUpper = char.IsUpper(thisChar);
+							var isNextUpper = char.IsUpper(nextChar);
+							
+							if (!isThisUpper && thisChar != '_' && isNextUpper)
 								break;
 							if (SISettings.wordBreak_RightArrowStopsAtWordEnd ?
 								thisChar != '_' && nextChar == '_' :
@@ -1297,12 +1302,12 @@ public class FGTextBuffer : ScriptableObject
 							{
 								break;
 							}
-							if (thisChar >= 'A' && thisChar <= 'Z' && nextChar >= 'A' && nextChar <= 'Z')
+							if (isThisUpper && isNextUpper)
 							{
 								if (column + 1 < s.Length)
 								{
 									var c = s[column + 1];
-									if (GetCharClass(c, false, ignorePunctuations) == 2 && (c < 'A' || c > 'Z'))
+									if (GetCharClass(c, false, ignorePunctuations) == 2 && !char.IsUpper(c))
 										break;
 								}
 							}
@@ -1528,7 +1533,7 @@ public class FGTextBuffer : ScriptableObject
 				UndoRecord last = undoBuffer[undoPosition - 1];
 				if (IsModified && last.changes.Count == 1 && last.postCaretPos == tempUndoRecord.preCaretPos &&
 					last.postSelectionPos == tempUndoRecord.preSelectionPos &&
-					last.actionType == tempUndoRecord.actionType && !last.actionType.StartsWith("*"))
+					last.actionType == tempUndoRecord.actionType && !last.actionType.FastStartsWith("*"))
 				{
 					UndoRecord.TextChange currChange = tempUndoRecord.changes[0];
 					UndoRecord.TextChange prevChange = last.changes[0];
@@ -1879,50 +1884,50 @@ public class FGTextBuffer : ScriptableObject
 		return new TextPosition(lines.Count, 0);
 	}
 	
-	private static Dictionary<string, string>[] expandedCache;
-	private static int cashedTabSize = 0;
-	public static string ExpandTabs(string s, int startAtColumn)
-	{
-		// Replacing tabs with spaces for proper alignment
-		int tabPos = s.IndexOf('\t', 0);
-		if (tabPos == -1)
-			return s;
+	//private static Dictionary<string, string>[] expandedCache;
+	//private static int cashedTabSize = 0;
+	//public static string ExpandTabs(string s, int startAtColumn)
+	//{
+	//	// Replacing tabs with spaces for proper alignment
+	//	int tabPos = s.IndexOf('\t', 0);
+	//	if (tabPos == -1)
+	//		return s;
 		
-		if (tabSize != cashedTabSize)
-		{
-			cashedTabSize = tabSize;
-			expandedCache = new [] {
-				new Dictionary<string, string>(),
-				new Dictionary<string, string>(),
-				new Dictionary<string, string>(),
-				new Dictionary<string, string>(),
-				new Dictionary<string, string>(),
-				new Dictionary<string, string>(),
-				new Dictionary<string, string>(),
-				new Dictionary<string, string>(),
-			};
-		}
+	//	if (tabSize != cashedTabSize)
+	//	{
+	//		cashedTabSize = tabSize;
+	//		expandedCache = new [] {
+	//			new Dictionary<string, string>(),
+	//			new Dictionary<string, string>(),
+	//			new Dictionary<string, string>(),
+	//			new Dictionary<string, string>(),
+	//			new Dictionary<string, string>(),
+	//			new Dictionary<string, string>(),
+	//			new Dictionary<string, string>(),
+	//			new Dictionary<string, string>(),
+	//		};
+	//	}
 
-		string cached;
-		if (expandedCache[startAtColumn % tabSize].TryGetValue(s, out cached))
-			return cached;
+	//	string cached;
+	//	if (expandedCache[startAtColumn % tabSize].TryGetValue(s, out cached))
+	//		return cached;
 
-		int startFrom = 0;
-		var sb = new StringBuilder();
-		while ((tabPos = s.IndexOf('\t', startFrom)) != -1)
-		{
-			sb.Append(s, startFrom, tabPos - startFrom);
-			sb.Append(' ', tabSize - ((sb.Length + startAtColumn) % tabSize));
-			startFrom = tabPos + 1;
-		}
-		if (startFrom == 0)
-			return s;
-		sb.Append(s.Substring(startFrom));
+	//	int startFrom = 0;
+	//	var sb = new StringBuilder();
+	//	while ((tabPos = s.IndexOf('\t', startFrom)) != -1)
+	//	{
+	//		sb.Append(s, startFrom, tabPos - startFrom);
+	//		sb.Append(' ', tabSize - ((sb.Length + startAtColumn) % tabSize));
+	//		startFrom = tabPos + 1;
+	//	}
+	//	if (startFrom == 0)
+	//		return s;
+	//	sb.Append(s.Substring(startFrom));
 		
-		cached = sb.ToString();
-		expandedCache[startAtColumn % tabSize][s] = cached;
-		return cached;
-	}
+	//	cached = sb.ToString();
+	//	expandedCache[startAtColumn % tabSize][s] = cached;
+	//	return cached;
+	//}
 
 	private void Parse(int parseToLine)
 	{
@@ -2087,7 +2092,7 @@ public class FGTextBuffer : ScriptableObject
 	public TextPosition GetOpeningBraceLeftOf(int tokenLine, int tokenIndex, int maxLinesDistance)
 	{
 		var firstLine = maxLinesDistance >= 0 ? Mathf.Max(0, tokenLine - maxLinesDistance) : 0;
-		var bracePosition = new TextPosition();
+		var bracePosition = TextPosition.invalid;
 		var tokens = formatedLines[tokenLine].tokens;
 		
 		var skipOver = 0;
@@ -2231,8 +2236,16 @@ public class FGTextBuffer : ScriptableObject
 	
 	public string CalcAutoIndent(int line)
 	{
-		if (!SISettings.autoIndent)
-			return null;
+		if (isText)
+		{
+			if (!SISettings.autoIndentText)
+				return null;
+		}
+		else
+		{
+			if (!SISettings.autoIndentCode)
+				return null;
+		}
 		
 		SyntaxToken firstToken, firstNonTrivia;
 		GetFirstTokens(line, out firstToken, out firstNonTrivia);
@@ -2241,7 +2254,7 @@ public class FGTextBuffer : ScriptableObject
 			return null;
 		
 		var leaf = firstNonTrivia != null ? firstNonTrivia.parent : null;
-		if (leaf == null && (firstToken == null || firstToken.text.StartsWith("#", System.StringComparison.Ordinal)))
+		if (leaf == null && (firstToken == null || firstToken.text.FastStartsWith("#")))
 			return null;
 		
 		string indent = null;

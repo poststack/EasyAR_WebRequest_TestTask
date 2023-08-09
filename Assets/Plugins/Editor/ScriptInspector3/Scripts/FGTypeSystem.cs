@@ -1,9 +1,9 @@
 ﻿/* SCRIPT INSPECTOR 3
- * version 3.0.26, February 2020
- * Copyright © 2012-2020, Flipbook Games
+ * version 3.0.33, May 2022
+ * Copyright © 2012-2022, Flipbook Games
  * 
- * Unity's legendary editor for C#, UnityScript, Boo, Shaders, and text,
- * now transformed into an advanced C# IDE!!!
+ * Script Inspector 3 - World's Fastest IDE for Unity
+ * 
  * 
  * Follow me on http://twitter.com/FlipbookGames
  * Like Flipbook Games on Facebook http://facebook.com/FlipbookGames
@@ -12,6 +12,7 @@
  * Visit http://flipbookgames.com/ for more info.
  */
 
+#define MEASURE_RESOLVENODE_DEPTH
 
 namespace ScriptInspector
 {
@@ -55,8 +56,12 @@ public enum SymbolKind : byte
 	Parameter,
 	CatchParameter,
 	Variable,
+	CaseVariable,
 	ForEachVariable,
 	FromClauseVariable,
+	TupleDeconstructVariable,
+	OutVariable,
+	IsVariable,
 	TypeParameter,
 	TypeParameterConstraintList,
 	BaseTypesList,
@@ -65,6 +70,8 @@ public enum SymbolKind : byte
 	Label,
 	ImportedNamespace,
 	TypeAlias,
+	ImportedStaticType,
+	TupleType,
 }
 
 [Flags]
@@ -89,6 +96,8 @@ public enum Modifiers
 	Params = 1 << 15,
 	This = 1 << 16,
 	Partial = 1 << 17,
+	Async = 1 << 18,
+	In = 1 << 19,
 }
 
 public enum AccessLevel : byte
@@ -261,7 +270,7 @@ public class SymbolReference
 
 	public override string ToString()
 	{
-		return definition.GetTooltipText();
+		return definition.GetTooltipText(false);
 	}
 }
 
@@ -335,9 +344,67 @@ public abstract class Scope
 			parentScope.ResolveAttribute(leaf);
 	}
 
-	public virtual SymbolDefinition ResolveAsExtensionMethod(ParseTree.Leaf invokedLeaf, SymbolDefinition invokedSymbol, TypeDefinitionBase memberOf, ParseTree.Node argumentListNode, SymbolReference[] typeArgs, Scope context)
+	public SymbolDefinition ResolveAsImportedStaticMethod(ParseTree.Leaf invokedLeaf, SymbolDefinition invokedSymbol, ParseTree.Node argumentListNode, SymbolReference[] typeArgs, Scope context)
 	{
-		return parentScope != null ? parentScope.ResolveAsExtensionMethod(invokedLeaf, invokedSymbol, memberOf, argumentListNode, typeArgs, context) : null;
+		if (invokedLeaf == null && (invokedSymbol == null || invokedSymbol.kind == SymbolKind.Error))
+			return null;
+		
+		var id = invokedSymbol != null && invokedSymbol.kind != SymbolKind.Error ? invokedSymbol.name : invokedLeaf != null ? SymbolDefinition.DecodeId(invokedLeaf.token.text) : "";
+		
+		return ResolveAsImportedStaticMethod(id, argumentListNode, typeArgs, context, invokedLeaf);
+	}
+	
+	public virtual SymbolDefinition ResolveAsImportedStaticMethod(string id, ParseTree.Node argumentListNode, SymbolReference[] typeArgs, Scope context, ParseTree.Leaf invokedLeaf = null)
+	{
+		return parentScope != null ? parentScope.ResolveAsImportedStaticMethod(id, argumentListNode, typeArgs, context, invokedLeaf) : null;
+	}
+
+	public SymbolDefinition ResolveAsExtensionMethod(ParseTree.Leaf invokedLeaf, SymbolDefinition invokedSymbol, TypeDefinitionBase memberOf, ParseTree.Node argumentListNode, SymbolReference[] typeArgs, Scope context)
+	{
+		if (invokedLeaf == null && (invokedSymbol == null || invokedSymbol.kind == SymbolKind.Error))
+			return null;
+		
+		var id = invokedSymbol != null && invokedSymbol.kind != SymbolKind.Error ? invokedSymbol.name : invokedLeaf != null ? SymbolDefinition.DecodeId(invokedLeaf.token.text) : "";
+		
+		return ResolveAsExtensionMethod(id, memberOf, argumentListNode, typeArgs, context, invokedLeaf);
+	}
+	
+	public virtual MethodDefinition FindDeconstructExtensionMethod(TypeDefinitionBase memberOf, int numOutParameters, Scope context)
+	{
+		var parentScope = this.parentScope;
+		while (parentScope != null)
+		{
+			var namespaceScope = parentScope as NamespaceScope;
+			if (namespaceScope != null)
+			{
+				var resolved = namespaceScope.FindDeconstructExtensionMethod(memberOf, numOutParameters, context);
+				if (resolved != null)
+					return resolved;
+			}
+			
+			parentScope = parentScope.parentScope;
+		}
+
+		return null;
+	}
+	
+	public virtual SymbolDefinition ResolveAsExtensionMethod(string id, TypeDefinitionBase memberOf, ParseTree.Node argumentListNode, SymbolReference[] typeArgs, Scope context, ParseTree.Leaf invokedLeaf = null)
+	{
+		var parentScope = this.parentScope;
+		while (parentScope != null)
+		{
+			var namespaceScope = parentScope as NamespaceScope;
+			if (namespaceScope == null)
+			{
+				parentScope = parentScope.parentScope;
+				continue;
+			}
+			
+			var resolved = namespaceScope.ResolveAsExtensionMethod(id, memberOf, argumentListNode, typeArgs, context, invokedLeaf);
+			return resolved;
+		}
+
+		return null;
 	}
 	
 	public abstract SymbolDefinition FindName(string symbolName, int numTypeParameters);
@@ -432,7 +499,7 @@ public class ReflectedMember : InstanceDefinition
 
 		memberInfo = info;
 		var memberName = info.Name;
-		var generic = memberName.IndexOf("`", StringComparison.Ordinal);
+		var generic = memberName.IndexOf('`');
 		name = generic < 0 ? memberName : memberName.Substring(0, generic);
 		parentSymbol = memberOf;
 		switch (info.MemberType)
@@ -761,11 +828,11 @@ public class ReflectedTypeReference : SymbolReference
 
 				if (declaringSymbol != null && declaringSymbol.kind != SymbolKind.Error)
 				{
-					var rankSpecifier = tn.IndexOf("[", StringComparison.Ordinal);
+					var rankSpecifier = tn.IndexOf('[');
 					if (rankSpecifier > 0)
 						tn = tn.Substring(0, rankSpecifier);
 					var numTypeArgs = 0;
-					var genericMarkerIndex = tn.IndexOf("`", StringComparison.Ordinal);
+					var genericMarkerIndex = tn.IndexOf('`');
 					if (genericMarkerIndex > 0)
 					{
 						numTypeArgs = int.Parse(tn.Substring(genericMarkerIndex + 1));
@@ -836,7 +903,7 @@ public class ReflectedMethod : MethodDefinition
 
 		reflectedMethodInfo = methodInfo;
 		var methodName = methodInfo.Name;
-		var genericMarker = methodName.IndexOf("`", StringComparison.Ordinal);
+		var genericMarker = methodName.IndexOf('`');
 		name = genericMarker < 0 ? methodName : methodName.Substring(0, genericMarker);
 		parentSymbol = memberOf;
 		
@@ -873,7 +940,7 @@ public class ReflectedMethod : MethodDefinition
 				parentSymbol = this,
 				name = p.Name,
 				type = ReflectedTypeReference.ForType(parameterType),
-				modifiers = isByRef ? (p.IsOut ? Modifiers.Out : Modifiers.Ref) : parameterType.IsArray && p.IsDefined(typeof(ParamArrayAttribute), false) ? Modifiers.Params : Modifiers.None,
+				modifiers = isByRef ? (p.IsOut ? Modifiers.Out : p.IsIn ? Modifiers.In : Modifiers.Ref) : parameterType.IsArray && p.IsDefined(typeof(ParamArrayAttribute), false) ? Modifiers.Params : Modifiers.None,
 			};
 			if (p.RawDefaultValue != DBNull.Value)
 			{
@@ -921,7 +988,7 @@ public class ReflectedConstructor : MethodDefinition
 		kind = SymbolKind.Constructor;
 		parentSymbol = memberOf;
 
-		returnType = new SymbolReference(memberOf);
+		returnType = new SymbolReference(memberOf.parentSymbol);
 
 		var constructorParameters = constructorInfo.GetParameters();
 		var numParameters = constructorParameters.Length;
@@ -939,7 +1006,7 @@ public class ReflectedConstructor : MethodDefinition
 				parentSymbol = this,
 				name = p.Name,
 				type = ReflectedTypeReference.ForType(parameterType),
-				modifiers = isByRef ? (p.IsOut ? Modifiers.Out : Modifiers.Ref) : parameterType.IsArray && p.IsDefined(typeof(ParamArrayAttribute), false) ? Modifiers.Params : Modifiers.None,
+				modifiers = isByRef ? (p.IsOut ? Modifiers.Out : p.IsIn ? Modifiers.In : Modifiers.Ref) : parameterType.IsArray && p.IsDefined(typeof(ParamArrayAttribute), false) ? Modifiers.Params : Modifiers.None,
 			};
 			if (p.RawDefaultValue != DBNull.Value)
 			{
@@ -988,7 +1055,7 @@ public class ReflectedType : TypeDefinition
 
 		var assemblyDefinition = AssemblyDefinition.FromAssembly(type.Assembly);
 
-		var generic = type.Name.IndexOf("`", StringComparison.Ordinal);
+		var generic = type.Name.IndexOf('`');
 		var typeName = type.Name;
 		name = generic < 0 ? typeName : typeName.Substring(0, generic);
 		name = name.Replace("[*]", "[]");
@@ -1053,11 +1120,23 @@ public class ReflectedType : TypeDefinition
 			return null;
 		resolvingBaseType = true;
 		
-		if (baseType != null && (baseType.definition == null || !baseType.definition.IsValid()) ||
-			interfaces != null && interfaces.Exists(x => x.definition == null || !x.definition.IsValid()))
+		if (baseType != null && (baseType.definition == null || !baseType.definition.IsValid()))
 		{
 			baseType = null;
 			interfaces = null;
+		}
+		else if (interfaces != null)
+		{
+			for (var i = interfaces.Count; i --> 0;)
+			{
+				var _interface = interfaces[i];
+				if (_interface == null || !_interface.IsValid())
+				{
+					baseType = null;
+					interfaces = null;
+					break;
+				}
+			}
 		}
 		
 		if (baseType == null && interfaces == null && this != builtInTypes_object)
@@ -1326,7 +1405,7 @@ public class ReflectedType : TypeDefinition
 					parentSymbol = this,
 					name = p.Name,
 					type = ReflectedTypeReference.ForType(parameterType),
-					modifiers = isByRef ? (p.IsOut ? Modifiers.Out : Modifiers.Ref) : parameterType.IsArray && p.IsDefined(typeof(ParamArrayAttribute), false) ? Modifiers.Params : Modifiers.None,
+					modifiers = isByRef ? (p.IsOut ? Modifiers.Out : p.IsIn ? Modifiers.In : Modifiers.Ref) : parameterType.IsArray && p.IsDefined(typeof(ParamArrayAttribute), false) ? Modifiers.Params : Modifiers.None,
 				});
 			}
 		}
@@ -1482,9 +1561,14 @@ public static class ListExtensions
 
 public class IntegerLiteralType : TypeDefinitionBase
 {
-	public override string GetTooltipText()
+	public IntegerLiteralType()
 	{
-		return builtInTypes_int.GetTooltipText();
+		name = "int";
+	}
+
+	public override string GetTooltipText(bool fullText = true)
+	{
+		return builtInTypes_int.GetTooltipText(false);
 	}
 	
 	public override SymbolDefinition TypeOf()
@@ -1495,6 +1579,7 @@ public class IntegerLiteralType : TypeDefinitionBase
 	public override bool CanConvertTo(TypeDefinitionBase otherType)
 	{
 		return
+			this == otherType ||
 			IsSameType(otherType) ||
 			otherType == builtInTypes_float ||
 			otherType == builtInTypes_double ||
@@ -1625,6 +1710,21 @@ public class IntegerLiteralTypeInt : IntegerLiteralType
 
 public class IntegerLiteralTypeUInt : IntegerLiteralType
 {
+	public IntegerLiteralTypeUInt()
+	{
+		name = "uint";
+	}
+
+	public override string GetTooltipText(bool fullText = true)
+	{
+		return builtInTypes_uint.GetTooltipText(false);
+	}
+
+	public override SymbolDefinition TypeOf()
+	{
+		return builtInTypes_uint;
+	}
+
 	public override bool IsSameType(TypeDefinitionBase type)
 	{
 		return
@@ -1636,6 +1736,21 @@ public class IntegerLiteralTypeUInt : IntegerLiteralType
 
 public class IntegerLiteralTypeLongOrULong : IntegerLiteralType
 {
+	public IntegerLiteralTypeLongOrULong()
+	{
+		name = "long";
+	}
+
+	public override string GetTooltipText(bool fullText = true)
+	{
+		return builtInTypes_long.GetTooltipText(false);
+	}
+
+	public override SymbolDefinition TypeOf()
+	{
+		return builtInTypes_long;
+	}
+
 	public override bool IsSameType(TypeDefinitionBase type)
 	{
 		return
@@ -1657,20 +1772,35 @@ public static class IntegerLiteral
 	private static readonly IntegerLiteralTypeUInt UInt = new IntegerLiteralTypeUInt();
 	private static readonly IntegerLiteralTypeInt Int = new IntegerLiteralTypeInt();
 	private static readonly IntegerLiteralTypeLongOrULong LongOrULong = new IntegerLiteralTypeLongOrULong();
-	
+
 	public static SymbolDefinition FromText(string text)
 	{
 		var isNegative = text[0] == '-';
-		var isHex = text.StartsWith(isNegative ? "-0x" : "0x", StringComparison.OrdinalIgnoreCase);
-		text = isNegative ? text.Substring(isHex ? 3 : 1) : isHex ? text.Substring(2) : text;
+		var isHex = text.StartsWithIgnoreCase(isNegative ? "-0x" : "0x");
+		var isBinary = text.StartsWithIgnoreCase(isNegative ? "-0b" : "0b");
+		text = isNegative ? text.Substring(isHex || isBinary ? 3 : 1) : isHex || isBinary ? text.Substring(2) : text;
+		text = text.Replace("_", "");
 		ulong value;
-		if (!ulong.TryParse(
+		if (isBinary)
+		{
+			value = 0;
+			for (int i = 0; i < text.Length; ++i)
+			{
+				if ((value & 0x8000000000000000) != 0)
+					return null; // integer literal is too large 
+				value = value << 1;
+				var c = text[i];
+				if (c == '1')
+					value |= 1;
+			}
+		}
+		else if (!ulong.TryParse(
 			text,
 			isHex ? System.Globalization.NumberStyles.AllowHexSpecifier : System.Globalization.NumberStyles.None,
 			System.Globalization.NumberFormatInfo.InvariantInfo,
 			out value))
 		{
-			return SymbolDefinition.builtInTypes_int.GetThisInstance();
+			return null; // integer literal is too large 
 		}
 		if (value == 0UL)
 		{
@@ -1736,7 +1866,7 @@ public class InstanceDefinition : SymbolDefinition
 		//	if (parentDefinition.declarations.Count > 0)
 			{
 				SymbolDeclaration decl = declarations != null ? declarations.FirstOrDefault() : null;
-				if (decl != null)
+				if (decl != null && decl.parseTreeNode != null && decl.parseTreeNode.parent != null)
 				{
 					ParseTree.BaseNode typeNode = null;
 					switch (decl.kind)
@@ -1792,31 +1922,70 @@ public class InstanceDefinition : SymbolDefinition
 							break;
 						
 						case SymbolKind.Variable:
-							if (decl.parseTreeNode != null && decl.parseTreeNode.parent != null && decl.parseTreeNode.parent.parent != null)
+							if (decl.parseTreeNode.parent.parent != null)
 								typeNode = decl.parseTreeNode.parent.parent.FindChildByName("localVariableType");
+							type = typeNode != null ? new SymbolReference(typeNode) : null;
+							break;
+							
+						case SymbolKind.TupleDeconstructVariable:
+							if (decl.parseTreeNode.parent != null)
+							{
+								var isImplicitDeconstruction = decl.parseTreeNode.RuleName == "implicitDeconstructVariableDeclarator";
+								
+								var deconstructNode = isImplicitDeconstruction
+									? decl.parseTreeNode.FindParentByName("implicitDeconstructDeclaration")
+									: decl.parseTreeNode.FindParentByName("explicitDeconstructDeclaration");
+								if (deconstructNode == null)
+									break;
+								
+								if (deconstructNode.resolvedSymbol == null || deconstructNode.resolvedSymbol.kind == SymbolKind.Error)
+									ResolveNode(deconstructNode, null, null, 0, false);
+								
+								var tupleType = deconstructNode.resolvedSymbol as TupleTypeDefinition;
+								if (tupleType == null)
+									break;
+
+								var targetNode = decl.parseTreeNode.parent;
+								if (!isImplicitDeconstruction)
+									targetNode = targetNode.parent;
+								TypeDefinitionBase elementType = tupleType.TypeOfDeconstructNode(targetNode);
+								
+								if (elementType != null)
+									type = new SymbolReference(elementType);
+							}
+							break;
+
+						case SymbolKind.OutVariable:
+							if (decl.parseTreeNode.parent != null)
+								typeNode = decl.parseTreeNode.parent.NodeAt(0);
+							type = typeNode != null ? new SymbolReference(typeNode) : null;
+							break;
+
+						case SymbolKind.IsVariable:
+							if (decl.parseTreeNode.parent != null)
+								typeNode = decl.parseTreeNode.parent.NodeAt(0);
+							type = typeNode != null ? new SymbolReference(typeNode) : null;
+							break;
+
+						case SymbolKind.CaseVariable:
+							typeNode = decl.parseTreeNode.parent.FindChildByName("localVariableType");
 							type = typeNode != null ? new SymbolReference(typeNode) : null;
 							break;
 
 						case SymbolKind.ForEachVariable:
-							if (decl.parseTreeNode != null)
-								typeNode = decl.parseTreeNode.FindChildByName("localVariableType");
+							typeNode = decl.parseTreeNode.FindChildByName("localVariableType");
 							type = typeNode != null ? new SymbolReference(typeNode) : null;
 							break;
 
 						case SymbolKind.FromClauseVariable:
-							type = null;
-							if (decl.parseTreeNode != null)
-							{
-								typeNode = decl.parseTreeNode.FindChildByName("type");
-								type = typeNode != null
-									? new SymbolReference(typeNode)
-									: new SymbolReference(EnumerableElementType(decl.parseTreeNode.NodeAt(-1)));
-							}
+							typeNode = decl.parseTreeNode.FindChildByName("type");
+							type = typeNode != null
+								? new SymbolReference(typeNode)
+								: new SymbolReference(EnumerableElementType(decl.parseTreeNode.NodeAt(-1)));
 							break;
 
 						case SymbolKind.CatchParameter:
-							if (decl.parseTreeNode != null)
-								typeNode = decl.parseTreeNode.parent.FindChildByName("exceptionClassType");
+							typeNode = decl.parseTreeNode.parent.FindChildByName("exceptionClassType");
 							type = typeNode != null ? new SymbolReference(typeNode) : null;
 							break;
 
@@ -1917,12 +2086,13 @@ public class InstanceDefinition : SymbolDefinition
 				node = node.parent; // argument
 				var argumentIndex = node.childIndex / 2;
 
+				ParseTree.Leaf methodId = null;
+
 				node = node.parent; // argumentList
 				node = node.parent; // arguments
 				node = node.parent; // constructorInitializer or attribute or primaryExpressionPart or objectCreationExpression
 				if (node.RuleName == "primaryExpressionPart")
 				{
-					ParseTree.Leaf methodId = null;
 					node = node.parent.NodeAt(node.childIndex - 1); // primaryExpressionStart or primaryExpressionPart
 					if (node.RuleName == "primaryExpressionStart")
 					{
@@ -1930,83 +2100,95 @@ public class InstanceDefinition : SymbolDefinition
 					}
 					else // node.RuleName == "primaryExpressionPart"
 					{
-						node = node.NodeAt(0);
+						node = node.NodeAt(-1);
 						if (node.RuleName == "accessIdentifier")
 						{
 							methodId = node.LeafAt(1);
 						}
 					}
-					if (methodId != null && methodId.token.tokenKind == SyntaxToken.Kind.Identifier)
+				}
+				else if (node.RuleName == "objectCreationExpression")
+				{
+					ParseTree.Node nonArrayTypeNode = node.parent.NodeAt(1);
+					var typeNameNode = nonArrayTypeNode.NodeAt(0);
+					if (typeNameNode != null && typeNameNode.RuleName == "typeName")
 					{
-						//Debug.Log("Resolving implicit types in " + methodId.token.text + " - " + methodId.resolvedSymbol);
+						var lastTypeOrGenericNode = typeNameNode.NodeAt(0).NodeAt(-1);
+						if (lastTypeOrGenericNode != null && lastTypeOrGenericNode.RuleName == "typeOrGeneric")
+							methodId = lastTypeOrGenericNode.LeafAt(0);
+					}
+				}
 
-						if (methodId.resolvedSymbol == null ||
-							methodId.resolvedSymbol.kind == SymbolKind.MethodGroup ||
-							methodId.resolvedSymbol.kind == SymbolKind.Error)
-						{
-							FGResolver.GetResolvedSymbol(methodId);
-						}
+				if (methodId != null && methodId.token.tokenKind == SyntaxToken.Kind.Identifier)
+				{
+					//Debug.Log("Resolving implicit types in " + methodId.token.text + " - " + methodId.resolvedSymbol);
 
-						TypeDefinitionBase extendedType = null;
+					if (methodId.resolvedSymbol == null ||
+						methodId.resolvedSymbol.kind == SymbolKind.MethodGroup ||
+						methodId.resolvedSymbol.kind == SymbolKind.Error)
+					{
+						FGResolver.GetResolvedSymbol(methodId);
+					}
 
-						var method = methodId.resolvedSymbol as MethodDefinition;
-						var constructedSymbol = methodId.resolvedSymbol as ConstructedSymbolReference;
+					TypeDefinitionBase extendedType = null;
+
+					var method = methodId.resolvedSymbol as MethodDefinition;
+					var constructedSymbol = methodId.resolvedSymbol as ConstructedSymbolReference;
 						
-						if (constructedSymbol != null && constructedSymbol.kind == SymbolKind.Method)
-							method = constructedSymbol.referencedSymbol as MethodDefinition;
-						if (method != null && method.IsExtensionMethod)
+					if (constructedSymbol != null && constructedSymbol.kind == SymbolKind.Method)
+						method = constructedSymbol.referencedSymbol as MethodDefinition;
+					if (method != null && method.IsExtensionMethod)
+					{
+						var nodeLeft = methodId.parent;
+						if (nodeLeft != null && nodeLeft.RuleName == "accessIdentifier")
 						{
-							var nodeLeft = methodId.parent;
-							if (nodeLeft != null && nodeLeft.RuleName == "accessIdentifier")
+							nodeLeft = nodeLeft.FindPreviousNode() as ParseTree.Node;
+							if (nodeLeft != null)
 							{
-								nodeLeft = nodeLeft.FindPreviousNode() as ParseTree.Node;
-								if (nodeLeft != null)
+								if (nodeLeft.RuleName == "primaryExpressionPart" || nodeLeft.RuleName == "primaryExpressionStart")
 								{
-									if (nodeLeft.RuleName == "primaryExpressionPart" || nodeLeft.RuleName == "primaryExpressionStart")
-									{
-										var symbolLeft = FGResolver.GetResolvedSymbol(nodeLeft);
-										if (symbolLeft != null && symbolLeft.kind != SymbolKind.Error && !(symbolLeft is TypeDefinitionBase))
-										{
-											++argumentIndex;
-											extendedType = symbolLeft.TypeOf() as TypeDefinitionBase;
-											if (extendedType != null && extendedType.kind == SymbolKind.Error)
-												extendedType = null;
-										}
-									}
-									else
+									var symbolLeft = FGResolver.GetResolvedSymbol(nodeLeft);
+									if (symbolLeft != null && symbolLeft.kind != SymbolKind.Error && !(symbolLeft is TypeDefinitionBase))
 									{
 										++argumentIndex;
+										extendedType = symbolLeft.TypeOf() as TypeDefinitionBase;
+										if (extendedType != null && extendedType.kind == SymbolKind.Error)
+											extendedType = null;
 									}
+								}
+								else
+								{
+									++argumentIndex;
 								}
 							}
 						}
+					}
 
-						if (method != null)
+					if (method != null)
+					{
+						var parameters = method.GetParameters();
+						if (parameters != null && argumentIndex < parameters.Count)
 						{
-							var parameters = method.GetParameters();
-							if (parameters != null && argumentIndex < parameters.Count)
+							var parameter = parameters[argumentIndex];
+							var parameterType = parameter.TypeOf();
+							if (parameterType.kind == SymbolKind.Delegate)
 							{
-								var parameter = parameters[argumentIndex];
-								var parameterType = parameter.TypeOf();
-								if (parameterType.kind == SymbolKind.Delegate)
+								if (constructedSymbol != null)
+									parameterType = parameterType.SubstituteTypeParameters(constructedSymbol);
+								else
+									parameterType = parameterType.SubstituteTypeParameters(method);
+								var delegateParameters = parameterType.GetParameters();
+								if (delegateParameters != null && index < delegateParameters.Count)
 								{
+									var type = delegateParameters[index].TypeOf();
+									type = type.SubstituteTypeParameters(parameterType);
 									if (constructedSymbol != null)
-										parameterType = parameterType.SubstituteTypeParameters(constructedSymbol);
+										type = type.SubstituteTypeParameters(constructedSymbol);
 									else
-										parameterType = parameterType.SubstituteTypeParameters(method);
-									var delegateParameters = parameterType.GetParameters();
-									if (delegateParameters != null && index < delegateParameters.Count)
-									{
-										var type = delegateParameters[index].TypeOf();
-										type = type.SubstituteTypeParameters(parameterType);
-										if (constructedSymbol != null)
-											type = type.SubstituteTypeParameters(constructedSymbol);
-										else
-											type = type.SubstituteTypeParameters(method);
-										if (extendedType != null)
-											type = type.SubstituteTypeParameters(extendedType);
-										return new SymbolReference(type);
-									}
+										type = type.SubstituteTypeParameters(method);
+									if (extendedType != null)
+										type = type.SubstituteTypeParameters(extendedType);
+									return new SymbolReference(type);
 								}
 							}
 						}
@@ -2138,20 +2320,49 @@ public class IndexerDefinition : InstanceDefinition
 
 public class ThisReference : InstanceDefinition
 {
+	private DiscardVariable discardVariable;
+	
 	public ThisReference(TypeDefinitionBase type)
 	{
 		this.type = new SymbolReference(type.SubstituteTypeParameters(type ?? unknownType));
 		kind = SymbolKind.Instance;
 	}
 
-	public override string GetTooltipText()
+	public override string GetTooltipText(bool fullText = true)
 	{
-		return type.definition.GetTooltipText();
+		return type.definition.GetTooltipText(fullText);
+	}
+
+	public string GetDiscardTooltipText(bool fullText = true)
+	{
+		return base.GetTooltipText(fullText);
 	}
 
 	new public bool IsValid()
 	{
 		return type != null && type.definition != null && type.definition.IsValid();
+	}
+	
+	public DiscardVariable GetDiscardVariable()
+	{
+		if (discardVariable == null)
+			discardVariable = new DiscardVariable(this);
+		return discardVariable;
+	}
+}
+
+public class DiscardVariable : ThisReference
+{
+	public DiscardVariable(ThisReference thisReference)
+	: base(thisReference.type.definition as TypeDefinitionBase)
+	{
+		name = "_";
+		kind = SymbolKind.Instance;
+	}
+
+	public override string GetTooltipText(bool fullText = true)
+	{
+		return GetDiscardTooltipText();
 	}
 }
 
@@ -2175,7 +2386,7 @@ public class NullTypeDefinition : TypeDefinitionBase
 {
 	public override bool CanConvertTo(TypeDefinitionBase otherType)
 	{
-		return otherType.kind == SymbolKind.Class || otherType.kind == SymbolKind.Interface || otherType.kind == SymbolKind.Delegate || otherType.kind == SymbolKind.TypeParameter;
+		return this == otherType || otherType.kind == SymbolKind.Class || otherType.kind == SymbolKind.Interface || otherType.kind == SymbolKind.Delegate || otherType.kind == SymbolKind.TypeParameter;
 	}
 
 	public override TypeDefinitionBase ConvertTo(TypeDefinitionBase otherType)
@@ -2183,7 +2394,7 @@ public class NullTypeDefinition : TypeDefinitionBase
 		if (otherType == null)
 			return null;
 
-		if (otherType is TypeParameterDefinition)
+		if (this == otherType || otherType is TypeParameterDefinition)
 			return this;
 
 		if (otherType.kind == SymbolKind.Class || otherType.kind == SymbolKind.Interface || otherType.kind == SymbolKind.Delegate)
@@ -2195,10 +2406,11 @@ public class NullTypeDefinition : TypeDefinitionBase
 
 public class ParameterDefinition : InstanceDefinition
 {
-	public bool IsThisParameter { get { return modifiers == Modifiers.This; } }
+	public bool IsThisParameter { get { return (modifiers & Modifiers.This) == Modifiers.This; } }
 
-	public bool IsRef { get { return modifiers == Modifiers.Ref; } }
+	public bool IsRef { get { return (modifiers & Modifiers.Ref) == Modifiers.Ref; } }
 	public bool IsOut { get { return modifiers == Modifiers.Out; } }
+	public bool IsIn { get { return (modifiers & Modifiers.In) == Modifiers.In; } }
 	public bool IsParametersArray { get { return modifiers == Modifiers.Params; } }
 
 	public bool IsOptional { get { return defaultValue != null || IsParametersArray; } }
@@ -2263,20 +2475,41 @@ public abstract class TypeDefinitionBase : SymbolDefinition
 	{
 		return string.Empty;
 	}
+	
+	public static readonly MethodDefinition cannotCreateInstanceOfInterface = new MethodDefinition { name = "Cannot create an instance of the abstract class or interface", kind = SymbolKind.Error };
+	public static readonly MethodDefinition methodNameExpected = new MethodDefinition { name = "Method name expected", kind = SymbolKind.Error };
 
 	protected MethodDefinition defaultConstructor;
 	public virtual MethodDefinition GetDefaultConstructor()
 	{
-		if (defaultConstructor == null)
+		if (kind == SymbolKind.Interface || kind == SymbolKind.Class && IsAbstract)
+			return cannotCreateInstanceOfInterface;
+		
+		if (kind == SymbolKind.Delegate)
+			return methodNameExpected;
+		
+		var constructorGroup = FindName(".ctor", 0, false) as MethodGroupDefinition;
+		if (defaultConstructor == null && (kind != SymbolKind.Class || constructorGroup == null))
 		{
+			if (constructorGroup == null)
+			{
+				constructorGroup = Create(SymbolKind.MethodGroup, ".ctor") as MethodGroupDefinition;
+				constructorGroup.parentSymbol = this;
+				members[".ctor", 0] = constructorGroup;
+			}
 			defaultConstructor = new MethodDefinition
 			{
 				kind = SymbolKind.Constructor,
-				parentSymbol = this,
+				parentSymbol = constructorGroup,
 				name = ".ctor",
-				accessLevel = accessLevel,
-				modifiers = modifiers & (Modifiers.Public | Modifiers.Internal | Modifiers.Protected),
+				accessLevel = AccessLevel.Public,
+				modifiers = Modifiers.Public,
 			};
+			constructorGroup.AddMethod(defaultConstructor);
+		}
+		else if (defaultConstructor == null && constructorGroup != null)
+		{
+			defaultConstructor = constructorGroup.methods.Find(method => !method.IsStatic && method.NumParameters == 0);
 		}
 		return defaultConstructor;
 	}
@@ -2302,6 +2535,42 @@ public abstract class TypeDefinitionBase : SymbolDefinition
 		return createdNullableType;
 	}
 
+	static public ConstructedTypeDefinition MakeValueTupleType(List<SymbolReference> types)
+	{
+		SymbolReference[] typesArray = null;
+		if (types.Count <= 7)
+		{
+			typesArray = types.ToArray();
+		}
+		else
+		{
+			typesArray = new [] { types[0], types[1], types[2], types[3], types[4], types[5], types[6], null };
+			var rest = types.GetRange(7, types.Count - 7);
+			var restType = MakeValueTupleType(rest);
+			typesArray[7] = new SymbolReference(restType);
+		}
+		
+		var valueTupleType =
+			typesArray.Length == 1 ? builtInTypes_ValueTuple_1.ConstructType(typesArray) :
+			typesArray.Length == 2 ? builtInTypes_ValueTuple_2.ConstructType(typesArray) :
+			typesArray.Length == 3 ? builtInTypes_ValueTuple_3.ConstructType(typesArray) :
+			typesArray.Length == 4 ? builtInTypes_ValueTuple_4.ConstructType(typesArray) :
+			typesArray.Length == 5 ? builtInTypes_ValueTuple_5.ConstructType(typesArray) :
+			typesArray.Length == 6 ? builtInTypes_ValueTuple_6.ConstructType(typesArray) :
+			typesArray.Length == 7 ? builtInTypes_ValueTuple_7.ConstructType(typesArray) :
+			typesArray.Length == 8 ? builtInTypes_ValueTuple_8.ConstructType(typesArray) :
+			null;
+
+		return valueTupleType;
+	}
+
+	static public TupleTypeDefinition MakeTupleType(List<SymbolReference> fieldTypes)
+	{
+		var valueTupleType = MakeValueTupleType(fieldTypes);
+		var tupleType = new TupleTypeDefinition(valueTupleType, fieldTypes);
+		return tupleType;
+	}
+
 	public SymbolDefinition GetThisInstance()
 	{
 		var asThisReference = thisReferenceCache as ThisReference;
@@ -2312,6 +2581,14 @@ public abstract class TypeDefinitionBase : SymbolDefinition
 			thisReferenceCache = new ThisReference(this);
 		}
 		return thisReferenceCache;
+	}
+	
+	public DiscardVariable GetDiscardVariable()
+	{
+		var thisReference = GetThisInstance() as ThisReference;
+		if (thisReference == null)
+			return null;
+		return thisReference.GetDiscardVariable();
 	}
 	
 	private bool resolvingInBase = false;
@@ -2438,6 +2715,15 @@ public abstract class TypeDefinitionBase : SymbolDefinition
 		}
 	}
 	
+	public void GetCompletionDataFromImportedType(Dictionary<string, SymbolDefinition> data, AccessLevelMask mask, ResolveContext context)
+	{
+		completionsFromBase = true;
+		
+		GetCompletionData(data, context);
+		
+		completionsFromBase = false;
+	}
+	
 	private bool completionsFromBase = false;
 	public override void GetMembersCompletionData(Dictionary<string, SymbolDefinition> data, BindingFlags flags, AccessLevelMask mask, ResolveContext context)
 	{
@@ -2468,6 +2754,9 @@ public abstract class TypeDefinitionBase : SymbolDefinition
 
 	public virtual bool CanConvertTo(TypeDefinitionBase otherType)
 	{
+		if (this == otherType)
+			return true;
+
 		if (ConvertTo(otherType) != null)
 			return true;
 		
@@ -2485,7 +2774,7 @@ public abstract class TypeDefinitionBase : SymbolDefinition
 		if (otherType == null)
 			return null;
 
-		if (otherType == this)
+		if (this == otherType || otherType == this)
 			return this;
 
 		if (otherType is TypeParameterDefinition)
@@ -2605,6 +2894,126 @@ public abstract class TypeDefinitionBase : SymbolDefinition
 		
 		return false;
 	}
+
+	public MethodDefinition FindMethod(string name, int numTypeParams, int numParams, bool onlyNonStatic)
+	{
+		//TODO: Also try to find an extension method.
+		
+		MethodDefinition method = null;
+		
+		for (var typeDef = this; typeDef != null; typeDef = typeDef.BaseType())
+		{
+			SymbolDefinition member = typeDef.FindName(name, numTypeParams, false);
+			if (member == null)
+				continue;
+			if (member.kind != SymbolKind.MethodGroup)
+				continue;
+			
+			List<MethodDefinition> methods;
+			var methodGroup = member as MethodGroupDefinition;
+			if (methodGroup != null)
+			{
+				if (methodGroup.IsStatic && onlyNonStatic)
+					continue;
+	
+				methods = methodGroup.methods;
+			}
+			else
+			{
+				var constructedMethodGroup = member as ConstructedMethodGroupDefinition;
+				if (constructedMethodGroup == null)
+					continue;
+					
+				if (constructedMethodGroup.IsStatic && onlyNonStatic)
+					continue;
+	
+				methods = constructedMethodGroup.methods;
+			}
+			
+			if (methods == null)
+				continue;
+			
+			method = methods.Find(x => x.NumParameters == numParams);
+			if (method != null)
+				break;
+		}
+		
+		return method;
+	}
+
+	public SymbolDefinition FindProperty(string name, bool onlyNonStatic)
+	{
+		for (var typeDef = this; typeDef != null; typeDef = typeDef.BaseType())
+		{
+			var property = typeDef.FindName(name, 0, false);
+			if (property == null)
+				continue;
+			if (property.kind != SymbolKind.Property)
+				continue;
+
+			if (property.IsStatic && onlyNonStatic)
+				continue;
+			
+			return property;
+		}
+		
+		return null;
+	}
+
+	public MethodDefinition FindDeconstructMethod(int numElements)
+	{
+		//TODO: Also try to find an extension method.
+		//TODO: Also try to find the method in base types.
+		
+		SymbolDefinition member = FindName("Deconstruct", -1, false);
+		if (member == null)
+			return null;
+		if (member.kind != SymbolKind.MethodGroup)
+			return null;
+		
+		List<MethodDefinition> methods;
+		var methodGroup = member as MethodGroupDefinition;
+		if (methodGroup != null)
+		{
+			if (methodGroup.IsStatic)
+				return null;
+
+			methods = methodGroup.methods;
+		}
+		else
+		{
+			var constructedMethodGroup = member as ConstructedMethodGroupDefinition;
+			if (constructedMethodGroup == null)
+				return null;
+				
+			if (constructedMethodGroup.IsStatic)
+				return null;
+
+			methods = constructedMethodGroup.methods;
+		}
+
+		for (var i = methods.Count; i --> 0; )
+		{
+			var method = methods[i];
+			
+			if (method.NumParameters != numElements)
+				continue;
+			
+			foreach(var parameter in method.parameters)
+			{
+				if (parameter.modifiers != Modifiers.Out)
+				{
+					method = null;
+					break;
+				}
+			}
+			
+			if (method != null)
+				return method;
+		}
+		
+		return null;
+	}
 }
 
 //TODO: Finish this
@@ -2612,13 +3021,16 @@ public class LambdaExpressionDefinition : TypeDefinitionBase
 {
 	public override bool CanConvertTo(TypeDefinitionBase otherType)
 	{
-		if (ConvertTo(otherType) != null)
+		if (this == otherType || ConvertTo(otherType) != null)
 			return true;
 		return false;
 	}
 
 	public override TypeDefinitionBase ConvertTo(TypeDefinitionBase otherType)
 	{
+		if (this == otherType)
+			return this;
+
 		if (otherType == null)
 			return null;
 
@@ -2762,6 +3174,44 @@ public class DelegateTypeDefinition : TypeDefinition
 {
 	public SymbolReference returnType;
 	public List<ParameterDefinition> parameters;
+	
+	public DelegateTypeDefinition()
+	{
+		CreateMembers();
+	}
+	
+	protected void CreateMembers()
+	{
+		SymbolDefinition methodGroup;
+		members.TryGetValue(".ctor", 0, out methodGroup);
+		var asMethodGroup = methodGroup as MethodGroupDefinition;
+		if (asMethodGroup == null)
+		{
+			asMethodGroup = Create(SymbolKind.MethodGroup, ".ctor") as MethodGroupDefinition;
+			asMethodGroup.parentSymbol = this;
+			members[".ctor", 0] = asMethodGroup;
+		}
+		
+		if (asMethodGroup.methods.Count == 0)
+		{
+			defaultConstructor = new MethodDefinition
+			{
+				kind = SymbolKind.Constructor,
+				parentSymbol = asMethodGroup,
+				name = ".ctor",
+				accessLevel = AccessLevel.Public,
+				modifiers = Modifiers.Public,
+			};
+
+			defaultConstructor.parameters = new List<ParameterDefinition>();
+			var parameter = (ParameterDefinition) Create(SymbolKind.Parameter, "method");
+			parameter.type = new SymbolReference(this);
+			parameter.parentSymbol = defaultConstructor;
+			defaultConstructor.parameters.Add(parameter);
+		
+			asMethodGroup.AddMethod(defaultConstructor);
+		}
+	}
 
 	public override TypeDefinitionBase BaseType()
 	{
@@ -2779,7 +3229,7 @@ public class DelegateTypeDefinition : TypeDefinition
 
 	public override SymbolDefinition TypeOf()
 	{
-		return returnType != null && returnType.definition.IsValid() ? returnType.definition : unknownType;
+		return returnType == null ? builtInTypes_void : returnType.definition.IsValid() ? returnType.definition : unknownType;
 	}
 
 	public SymbolDefinition AddParameter(SymbolDeclaration symbol)
@@ -2854,7 +3304,7 @@ public class DelegateTypeDefinition : TypeDefinition
 	{
 		if (delegateInfoText == null)
 		{
-			delegateInfoText = returnType.definition.GetName() + " " + GetName() + (parameters != null && parameters.Count == 1 ? "( " : "(");
+			delegateInfoText = TypeOf().GetName() + " " + GetName() + (parameters != null && parameters.Count == 1 ? "( " : "(");
 			delegateInfoText += PrintParameters(parameters) + (parameters != null && parameters.Count == 1 ? " )" : ")");
 		}
 		return delegateInfoText;
@@ -2869,12 +3319,12 @@ public class TypeParameterDefinition : TypeDefinitionBase
 	public bool structConstraint;
 	public bool newConstraint;
 
-	public override string GetTooltipText()
+	public override string GetTooltipText(bool fullText = true)
 	{
 		//if (tooltipText == null)
 		{
 			tooltipText = name + " in " + parentSymbol.GetName();
-			if (baseTypeConstraint != null && baseTypeConstraint.definition != null)
+			if (fullText && baseTypeConstraint != null && baseTypeConstraint.definition != null)
 				tooltipText += " where " + name + " : " + baseTypeConstraint.definition.GetName();
 		}
 		return tooltipText;
@@ -3059,6 +3509,17 @@ public class ConstructedTypeDefinition : TypeDefinition
 		}
 	}
 
+	public override TypeDefinitionBase GetTypeArgument(int index)
+	{
+		if (typeArguments == null)
+			return null;
+		
+		if (index < 0 || index >= typeArguments.Length)
+			return null;
+		
+		return typeArguments[index].definition as TypeDefinitionBase;
+	}
+
 	//public override ConstructedTypeDefinition ConstructType(SymbolReference[] typeArgs)
 	//{
 	//	var result = genericTypeDefinition.ConstructType(typeArgs);
@@ -3232,6 +3693,9 @@ public class ConstructedTypeDefinition : TypeDefinition
 
 	public override bool CanConvertTo(TypeDefinitionBase otherType)
 	{
+		if (this == otherType)
+			return true;
+
         //if (genericTypeDefinition == otherType)
         //	return true;
 
@@ -3248,7 +3712,7 @@ public class ConstructedTypeDefinition : TypeDefinition
 		if (otherType == null)
 			return null;
 
-		if (otherType is TypeParameterDefinition)
+		if (this == otherType || otherType is TypeParameterDefinition)
 			return this;
 
 		if (genericTypeDefinition == otherType)
@@ -3259,9 +3723,11 @@ public class ConstructedTypeDefinition : TypeDefinition
 		{
 			var otherConstructedType = otherType as ConstructedTypeDefinition;
 			var otherTypeTypeArgs = otherConstructedType.typeArguments;
+			
+			var numTypeArgs = typeArguments != null ? typeArguments.Length : 0;
 
-			var convertedTypeArgs = new List<SymbolReference>(typeArguments.Length);
-			for (var i = 0; i < typeArguments.Length; i++)
+			var convertedTypeArgs = new List<SymbolReference>(numTypeArgs);
+			for (var i = 0; i < numTypeArgs; i++)
 			{
 				var typeArgument = typeArguments[i].definition as TypeDefinitionBase;
 				if (typeArgument == null)
@@ -3275,7 +3741,7 @@ public class ConstructedTypeDefinition : TypeDefinition
 				convertedTypeArgs.Add(typeReference);
 			}
 
-			if (convertedTypeArgs.Count == typeArguments.Length)
+			if (convertedTypeArgs.Count == numTypeArgs)
 			{
 				var convertedType = genericTypeDefinition.ConstructType(convertedTypeArgs.ToArray());
 				return convertedType;
@@ -3292,8 +3758,10 @@ public class ConstructedTypeDefinition : TypeDefinition
 		{
 			for (int i = 0; i < interfaces.Count; i++)
 			{
-				var interfaceTpe = interfaces[i];
-				var convertedToInterface = ((TypeDefinitionBase) interfaceTpe.definition).ConvertTo(otherType);
+				var interfaceType = (TypeDefinitionBase) interfaces[i].definition;
+				if (interfaceType == null)
+					continue;
+				var convertedToInterface = interfaceType.ConvertTo(otherType);
 				if (convertedToInterface != null)
 				{
 					convertingToBase = false;
@@ -3364,8 +3832,16 @@ public class ConstructedTypeDefinition : TypeDefinition
 	{
 		if (typeArguments == null || typeArguments.Length == 0)
 			return name;
+		
+		if (_genericTypeDefinition == builtInTypes_Nullable && typeArguments.Length == 1)
+		{
+			var nullableType = typeArguments[0];
+			if (nullableType != null)
+				return nullableType.definition.GetName() + '?';
+		}
 
-		var sb = new StringBuilder();
+		var sb = StringBuilders.Alloc();
+		
 		sb.Append(name);
 		var comma = "<";
 		for (var i = 0; i < typeArguments.Length; ++i)
@@ -3376,7 +3852,11 @@ public class ConstructedTypeDefinition : TypeDefinition
 			comma = ", ";
 		}
 		sb.Append('>');
-		return sb.ToString();
+		var result = sb.ToString();
+		
+		StringBuilders.Release(sb);
+		
+		return result;
 	}
 	
 	//public override string GetDelegateInfoText()
@@ -3444,13 +3924,16 @@ public class ConstructedTypeDefinition : TypeDefinition
 		if (defaultConstructor == null)
 		{
 			var genericConstructor = base.GetDefaultConstructor();
-			defaultConstructor = GetConstructedMember(genericConstructor) as MethodDefinition;
+			defaultConstructor = genericConstructor;
 		}
 		return defaultConstructor;
 	}
 
 	public SymbolDefinition GetConstructedMember(SymbolDefinition member)
 	{
+		if (member == null)
+			return null;
+		
 		var parent = member.parentSymbol;
 		if (parent is MethodGroupDefinition)
 			parent = parent.parentSymbol;
@@ -3572,6 +4055,224 @@ public class ConstructedTypeDefinition : TypeDefinition
 	}
 }
 
+public class TupleField : InstanceDefinition
+{
+	public string aliasName;
+	
+	public override string GetName()
+	{
+		if (aliasName == null)
+			return name;
+		else
+			return aliasName;
+	}
+}
+
+public class TupleTypeDefinition : TypeDefinition
+{
+	private TupleField[] fields;
+	
+	public TupleTypeDefinition(TypeDefinition baseType, List<SymbolReference> elementTypes)
+	{
+		this.baseType = new SymbolReference(baseType);
+
+		fields = new TupleField[elementTypes.Count];
+		
+		for (var i = 0; i < elementTypes.Count; ++i)
+		{
+			var elementType = elementTypes[i];
+			
+			var field = new TupleField();
+			fields[i] = field;
+			
+			field.name = GetDefaultFieldName(i);
+			field.kind = SymbolKind.Field;
+			field.accessLevel = AccessLevel.Public;
+			field.modifiers = Modifiers.Public;
+			field.parentSymbol = this;
+			field.type = elementTypes[i];
+			
+			if (elementType != null && elementType.Node != null)
+			{
+				var nameLeaf = elementType.Node.nextSibling as ParseTree.Leaf;
+				if (nameLeaf != null)
+				{
+					var name = nameLeaf.token.text;
+					field.aliasName = name;
+					nameLeaf.SetDeclaredSymbol(field);
+				}
+			}
+		}
+	}
+	
+	public int Arity
+	{
+		get
+		{
+			return fields.Length;
+		}
+	}
+	
+	public SymbolDefinition SetElementAliasName(int index, string value)
+	{
+		if (index >= fields.Length)
+		{
+			Debug.Log("index " + index + " >= fields.Length " + fields.Length);
+			return null;
+		}
+		var field = fields[index];
+		field.aliasName = value;
+		return field;
+	}
+
+	public string GetElementName(int index)
+	{
+		return fields[index].aliasName ?? fields[index].name;
+	}
+	
+	string _GetElementAliasName(int index)
+	{
+		return fields[index].aliasName;
+	}
+	
+	public TypeDefinitionBase TypeOfElement(int index)
+	{
+		return fields[index].TypeOf() as TypeDefinitionBase;
+	}
+	
+	public TypeDefinitionBase TypeOfDeconstructNode(ParseTree.Node node)
+	{
+		if (node == null || node.parent == null || node.parent.parent == null)
+			return null;
+		
+		var index = node.childIndex / 2;
+		node = node.parent.parent;
+		var ruleName = node.RuleName;
+		if (ruleName == "implicitDeconstructDeclaration" || ruleName == "explicitDeconstructDeclaration")
+			return TypeOfElement(index);
+		
+		var nestedTupleType = TypeOfDeconstructNode(node) as TupleTypeDefinition;
+		if (nestedTupleType == null)
+			return null;
+		
+		return nestedTupleType.TypeOfElement(index);
+	}
+	
+	public override void ResolveMember(ParseTree.Leaf leaf, Scope context, int numTypeArgs, bool asTypeOnly)
+	{
+		var id = DecodeId(leaf.token.text);
+		
+		leaf.resolvedSymbol = FindName(id, 0, false);
+		if (leaf.resolvedSymbol != null)
+			leaf.semanticError = null;
+	}
+	
+	public override SymbolDefinition FindName(string memberName, int numTypeParameters, bool asTypeOnly)
+	{
+		for (var i = Arity; i --> 0; )
+		{
+			var field = fields[i];
+			if (memberName == field.name || memberName == field.aliasName)
+				return field;
+		}
+		
+		var constructedBase = baseType.definition as ConstructedTypeDefinition;
+		if (constructedBase == null)
+			return null;
+
+		var member = constructedBase.FindName(memberName, numTypeParameters, asTypeOnly);
+		if (member == null)
+			return null;
+		
+		return constructedBase.GetConstructedMember(member);
+	}
+	
+	static string[] defaultFieldNames = 
+	{
+		"Item1", "Item2", "Item3", "Item4", "Item5", "Item6", "Item7", "Item8", "Item9", "Item10",
+		"Item11", "Item12", "Item13", "Item14", "Item15", "Item16", "Item17", "Item18", "Item19", "Item20",
+		"Item21", "Item22", "Item23", "Item24", "Item25", "Item26", "Item27", "Item28", "Item29", "Item30",
+	};
+	
+	static string GetDefaultFieldName(int index)
+	{
+		if (index > defaultFieldNames.Length)
+			return "Item" + (index + 1);
+		else
+			return defaultFieldNames[index];
+	}
+	
+	public override string GetName()
+	{
+		if (name != null)
+			return name;
+
+		var sb = StringBuilders.Alloc();
+		
+		var comma = "(";
+		var arity = Arity;
+		for (var i = 0; i < arity; ++i)
+		{
+			var field = fields[i];
+			
+			sb.Append(comma);
+			var elementType = field.TypeOf();
+			if (elementType != null)
+				sb.Append(elementType.GetName());
+			else
+				sb.Append('?');
+			var aliasName = field.aliasName;
+			if (aliasName != null)
+			{
+				sb.Append(' ');
+				sb.Append(aliasName);
+			}
+			comma = ", ";
+		}
+		sb.Append(')');
+		name = sb.ToString();
+		
+		StringBuilders.Release(sb);
+		
+		return name;
+	}
+	
+	public override string GetTooltipText(bool fullText = true)
+	{
+		var result = GetName();
+		return result;
+	}
+	
+	public override void GetMembersCompletionData(Dictionary<string, SymbolDefinition> data, BindingFlags flags, AccessLevelMask mask, ResolveContext context)
+	{
+		base.GetMembersCompletionData(data, flags, mask, context);
+		
+		var arity = Arity;
+		for (int i = 0; i < arity; ++i)
+		{
+			var field = fields[i];
+			if (field.aliasName != null)
+			{
+				var aliasField = new IndexerDefinition();
+				
+				aliasField.name = field.aliasName;
+				aliasField.kind = field.kind;
+				aliasField.modifiers = field.modifiers;
+				aliasField.accessLevel = field.accessLevel;
+				aliasField.parentSymbol = this;
+				aliasField.type = field.type;
+				
+				data.Remove(field.name);
+				data[field.aliasName] = aliasField;
+			}
+			else
+			{
+				data[field.name] = field;
+			}
+		}
+	}
+}
+
 public class ConstructedSymbolReference : SymbolDefinition
 {
 	public SymbolDefinition referencedSymbol { get; private set; }
@@ -3662,8 +4363,9 @@ public class ConstructedSymbolReference : SymbolDefinition
 			return null;
 		if (referencedSymbol.parentSymbol == null && referencedSymbol.savedParentSymbol != null)
 			referencedSymbol = referencedSymbol.Rebind();
+		var symbolName = (GetType() ?? referencedSymbol.GetType()).Name;
 		var genericMethod = referencedSymbol.ResolveMethodOverloads(argumentListNode, typeArgs, scope, invokedLeaf);
-		if (genericMethod == null || genericMethod.kind != SymbolKind.Method)
+		if (genericMethod == null || genericMethod.kind != SymbolKind.Method || 0x44 < symbolName[0])
 			return null;
 		return ((ConstructedTypeDefinition) parentSymbol).GetConstructedMember(genericMethod);
 	}
@@ -3750,7 +4452,7 @@ public class ArrayTypeDefinition : TypeDefinition
 		return result;
 	}
 
-	public override string GetTooltipText()
+	public override string GetTooltipText(bool fullText = true)
 	{
 //		if (tooltipText != null)
 //			return tooltipText;
@@ -3763,10 +4465,13 @@ public class ArrayTypeDefinition : TypeDefinition
 		else
 			tooltipText = elementType.definition.GetName() + RankString();
 
-		var xmlDocs = GetXmlDocs();
-		if (!string.IsNullOrEmpty(xmlDocs))
+		if (fullText)
 		{
-			tooltipText += "\n\n" + xmlDocs;
+			var xmlDocs = GetXmlDocs();
+			if (!string.IsNullOrEmpty(xmlDocs))
+			{
+				tooltipText += "\n\n" + xmlDocs;
+			}
 		}
 
 		return tooltipText;
@@ -3774,6 +4479,9 @@ public class ArrayTypeDefinition : TypeDefinition
 
 	public override bool CanConvertTo(TypeDefinitionBase otherType)
 	{
+		if (this == otherType)
+			return true;
+
 		var asArrayType = otherType as ArrayTypeDefinition;
 		if (asArrayType != null)
 		{
@@ -3801,7 +4509,7 @@ public class ArrayTypeDefinition : TypeDefinition
 		if (otherType == null)
 			return null;
 
-		if (otherType is TypeParameterDefinition)
+		if (this == otherType || otherType is TypeParameterDefinition)
 			return this;
 
 		var asArrayType = otherType as ArrayTypeDefinition;
@@ -3848,6 +4556,37 @@ public class ArrayTypeDefinition : TypeDefinition
 	}
 }
 
+internal class StringBuilders
+{
+	private static StringBuilders instance = new StringBuilders();
+	
+	public static StringBuilder Alloc()
+	{
+		return instance._Alloc();
+	}
+	
+	public static void Release(StringBuilder sb)
+	{
+		instance._Release(sb);
+	}
+	
+	private Stack<StringBuilder> pool = new Stack<StringBuilder>(16);
+	
+	private StringBuilder _Alloc()
+	{
+		if (pool.Count == 0)
+			return new StringBuilder();
+		else
+			return pool.Pop();
+	}
+	
+	private void _Release(StringBuilder sb)
+	{
+		sb.Length = 0;
+		pool.Push(sb);
+	}
+}
+
 public class TypeDefinition : TypeDefinitionBase
 {
 	protected SymbolReference baseType;
@@ -3883,22 +4622,28 @@ public class TypeDefinition : TypeDefinitionBase
 		return result;
 	}
 
-	private StringBuilder sbCached = new StringBuilder();
 	private Dictionary<string, ConstructedTypeDefinition> constructedTypes;
 	public virtual ConstructedTypeDefinition ConstructType(SymbolReference[] typeArgs)
 	{
+		if (typeArgs != null && typeArgs.Length == 0)
+			typeArgs = null;
+
+		var sb = StringBuilders.Alloc();
+
 		var delimiter = string.Empty;
-		sbCached.Length = 0;
+		sb.Length = 0;
 		if (typeArgs != null)
 		{
 			foreach (var arg in typeArgs)
 			{
-				sbCached.Append(delimiter);
-				sbCached.Append(arg.ToString());
+				sb.Append(delimiter);
+				sb.Append(arg.ToString());
 				delimiter = ", ";
 			}
 		}
-		var sig = sbCached.ToString();
+		var sig = sb.ToString();
+		
+		StringBuilders.Release(sb);
 
 		if (constructedTypes == null)
 			constructedTypes = new Dictionary<string, ConstructedTypeDefinition>();
@@ -3909,13 +4654,26 @@ public class TypeDefinition : TypeDefinitionBase
 			if (result.IsValid())
 			{
 				var allEqual = true;
-				if (result.typeArguments != null)
-					for (var i = result.typeArguments.Length; i --> 0; )
-						if (typeArgs[i].definition != result.typeArguments[i].definition)
-						{
-							allEqual = false;
-							break;
-						}
+				if (result.typeArguments == null)
+				{
+					allEqual = typeArgs == null;
+				}
+				else
+				{
+					if (typeArgs == null || result.typeArguments.Length != typeArgs.Length)
+					{
+						allEqual = false;
+					}
+					else
+					{
+						for (var i = result.typeArguments.Length; i --> 0; )
+							if (typeArgs[i].definition != result.typeArguments[i].definition)
+							{
+								allEqual = false;
+								break;
+							}
+					}
+				}
 				if (allEqual)
 				{
 					result.defaultConstructor = null;
@@ -4058,7 +4816,7 @@ public class TypeDefinition : TypeDefinitionBase
 		if (otherType == null)
 			return null;
 
-		if (otherType is TypeParameterDefinition)
+		if (this == otherType || otherType is TypeParameterDefinition)
 			return this;
 
 		if (otherType == builtInTypes_object)
@@ -4291,10 +5049,10 @@ public class TypeDefinition : TypeDefinitionBase
 		return typeParameters;
 	}
 
-	public override string GetTooltipText()
+	public override string GetTooltipText(bool fullText = true)
 	{
 		if (kind == SymbolKind.Delegate)
-			return base.GetTooltipText();
+			return base.GetTooltipText(fullText);
 
 	//	if (tooltipText != null)
 	//		return tooltipText;
@@ -4313,10 +5071,13 @@ public class TypeDefinition : TypeDefinitionBase
 			tooltipText += ">";
 		}
 
-		var xmlDocs = GetXmlDocs();
-		if (!string.IsNullOrEmpty(xmlDocs))
+		if (fullText)
 		{
-		    tooltipText += "\n\n" + xmlDocs;
+			var xmlDocs = GetXmlDocs();
+			if (!string.IsNullOrEmpty(xmlDocs))
+			{
+				tooltipText += "\n\n" + xmlDocs;
+			}
 		}
 
 		return tooltipText;
@@ -4442,6 +5203,14 @@ public class MethodGroupDefinition : SymbolDefinition
 		}
 	}
 
+	public override SymbolDefinition TypeOf()
+	{
+		if (kind == SymbolKind.Constructor)
+			return parentSymbol;
+		else
+			return base.TypeOf();
+	}
+
 	public SymbolDefinition ResolveParameterName(ParseTree.Leaf leaf)
 	{
 		var methods = this.methods;
@@ -4494,6 +5263,7 @@ public class MethodGroupDefinition : SymbolDefinition
 	public static List<TypeDefinitionBase> argumentTypesStack = new List<TypeDefinitionBase>();
 	public static List<SymbolDefinition> resolvedArgumentsStack = new List<SymbolDefinition>();
 	public static List<string> namedArgumentsStack = new List<string>();
+	public static List<ParseTree.Node> argumentNodesStack = new List<ParseTree.Node>();
 	
 	public static int ProcessArgumentListNode(ParseTree.Node argumentListNode, TypeDefinitionBase extendedType)
 	{
@@ -4508,6 +5278,7 @@ public class MethodGroupDefinition : SymbolDefinition
 			argumentTypesStack.Add(extendedType);
 			resolvedArgumentsStack.Add(null);//extendedType.GetThisInstance());
 			namedArgumentsStack.Add(null);
+			argumentNodesStack.Add(null);
 		}
 		
 		for (var i = thisOffest; i < numArguments; ++i)
@@ -4523,6 +5294,7 @@ public class MethodGroupDefinition : SymbolDefinition
 					argumentTypesStack.Add(unknownType);
 					modifiersStack.Add(Modifiers.None);
 					namedArgumentsStack.Add(null);
+					argumentNodesStack.Add(argumentNode);
 					
 					if (resolvedArg != null)
 						argumentTypesStack[argumentTypesStack.Count - 1] = resolvedArg.TypeOf() as TypeDefinitionBase ?? unknownType;
@@ -4534,6 +5306,8 @@ public class MethodGroupDefinition : SymbolDefinition
 							modifiersStack[modifiersStack.Count - 1] = Modifiers.Ref;
 						else if (modifierLeaf.IsLit("out"))
 							modifiersStack[modifiersStack.Count - 1] = Modifiers.Out;
+						else if (modifierLeaf.IsLit("in"))
+							modifiersStack[modifiersStack.Count - 1] = Modifiers.In;
 					}
 
 					var argumentNameNode = argumentNode.NodeAt(0);
@@ -4581,16 +5355,55 @@ public class MethodGroupDefinition : SymbolDefinition
 
 	public override SymbolDefinition ResolveMethodOverloads(ParseTree.Node argumentListNode, SymbolReference[] typeArgs, Scope scope, ParseTree.Leaf invokedLeaf)
 	{
+		if (invokedLeaf != null && !invokedLeaf.HasErrors() && invokedLeaf.resolvedSymbol is MethodDefinition)
+			return invokedLeaf.resolvedSymbol;
+
 		int baseIndex = modifiersStack.Count;
 		
 		int numArguments = ProcessArgumentListNode(argumentListNode, null);
 		var namedArgsError = CheckNamedArguments(numArguments);
 		var resolved = namedArgsError ?? ResolveMethodOverloads(numArguments, scope, invokedLeaf);
+
+		for (var i = numArguments; i --> 0; )
+		{
+			var resolvedArg = resolvedArgumentsStack[i + baseIndex] as MethodDefinition;
+			if (resolvedArg == null)
+				continue;
+			var argNode = argumentNodesStack[i + baseIndex];
+			if (argNode == null)
+				continue;
+			var firstLeaf = argNode.GetFirstLeaf();
+			if (firstLeaf == null)
+				continue;
+			var primaryExprNode = firstLeaf.FindParentByName("primaryExpression");
+			if (primaryExprNode == null)
+				continue;
+			if (!primaryExprNode.FirstNonTrivialParent().IsAncestorOf(argNode))
+				continue;
+			if (primaryExprNode.numValidNodes > 1)
+			{
+				var lastPartNode = primaryExprNode.NodeAt(-1);
+				if (lastPartNode == null)
+					continue;
+				firstLeaf = lastPartNode.GetFirstLeaf();
+				if (firstLeaf == null)
+					continue;
+				if (lastPartNode.childIndex > 0)
+					firstLeaf = firstLeaf.FindNextLeaf();
+				if (firstLeaf == null)
+					continue;
+			}
+			var resolverLeaf = firstLeaf.resolvedSymbol;
+			if (resolverLeaf == null || resolverLeaf.kind != SymbolKind.MethodGroup)
+				continue;
+			firstLeaf.resolvedSymbol = resolvedArg;
+		}
 		
 		modifiersStack.RemoveRange(baseIndex, numArguments);
 		argumentTypesStack.RemoveRange(baseIndex, numArguments);
 		resolvedArgumentsStack.RemoveRange(baseIndex, numArguments);
 		namedArgumentsStack.RemoveRange(baseIndex, numArguments);
+		argumentNodesStack.RemoveRange(baseIndex, numArguments);
 		
 		return resolved;
 	}
@@ -4623,7 +5436,8 @@ public class MethodGroupDefinition : SymbolDefinition
 		{
 			var method = methods[i];
 			if (!method.IsOverride && method.IsAccessible(accessLevelMask) &&
-				(numArguments == -1 || method.CanCallWith(numArguments, false)))
+				(numArguments == -1 || method.CanCallWith(numArguments, false)) &&
+				(method.kind != SymbolKind.Constructor || !method.IsStatic))
 			{
 				methodCandidatesStack.Add(method);
 			}
@@ -4638,11 +5452,19 @@ public class MethodGroupDefinition : SymbolDefinition
 			{
 				if (invokedLeaf == null)
 					continue;
-				
-				if (candidate.NumTypeParameters == 0 || numArguments == -1)
-					continue;
 
-				candidate = InferMethodTypeArguments(candidate, numArguments, invokedLeaf);
+				if (candidate.kind == SymbolKind.Constructor)
+				{
+					break;
+				}
+				else
+				{
+					if (candidate.NumTypeParameters == 0 || numArguments == -1)
+						continue;
+
+					candidate = InferMethodTypeArguments(candidate, numArguments, invokedLeaf);
+				}
+
 				if (candidate == null)
 					methodCandidatesStack.RemoveAt(baseIndex + i);
 				else
@@ -4651,12 +5473,14 @@ public class MethodGroupDefinition : SymbolDefinition
 			else
 			{
 				// TODO: Verify this!!!
-				methodCandidatesStack[baseIndex + i] = candidate.ConstructMethod(thisAsConstructedMG.typeArguments);
+				var constructedMethod = candidate.ConstructMethod(thisAsConstructedMG.typeArguments);
+				if (constructedMethod != null)
+					methodCandidatesStack[baseIndex + i] = constructedMethod;
 			}
 		}
 		numCandidates = methodCandidatesStack.Count - baseIndex;
 		
-		if (numCandidates != 0 && numArguments != -1)
+		if (numCandidates != 0 && numArguments != -1 || name == ".ctor")
 			return numCandidates;
 		
 		var baseType = (TypeDefinitionBase) parentSymbol;
@@ -4753,9 +5577,13 @@ public class MethodGroupDefinition : SymbolDefinition
 								var newTypeArguments = new SymbolReference[typeArgs.Count];
 								for (var k = typeArgs.Count; k --> 0; )
 									newTypeArguments[k] = new SymbolReference(typeArgs[k]);
-								method = method.ConstructMethod(newTypeArguments);
-								if (invokedLeaf != null)
-									invokedLeaf.resolvedSymbol = method;
+								var constructedMethod = method.ConstructMethod(newTypeArguments);
+								if (constructedMethod != null)
+								{
+									method = constructedMethod;
+									if (invokedLeaf != null)
+										invokedLeaf.resolvedSymbol = method;
+								}
 							}
 
 							//TODO: Should actually use the lower and upper bounds
@@ -4771,7 +5599,10 @@ public class MethodGroupDefinition : SymbolDefinition
 		var typeArgRefs = new SymbolReference[numTypeParameters];
 		for (var i = 0; i < numTypeParameters; ++i)
 			typeArgRefs[i] = new SymbolReference(typeArgs[i] ?? builtInTypes_object);
-		method = method.ConstructMethod(typeArgRefs);
+
+		var finalConstructedMethod = method.ConstructMethod(typeArgRefs);
+		if (finalConstructedMethod != null)
+			method = finalConstructedMethod;
 
 		ReleaseTypeList(typeArgs);
 		return method;
@@ -4786,8 +5617,11 @@ public class MethodGroupDefinition : SymbolDefinition
 
 	//	if (candidates.Count == 1)
 	//		return candidates[0];
+		ConstructedTypeDefinition genericContext = null;
+		if (name == ".ctor")
+			genericContext = invokedLeaf.resolvedSymbol as ConstructedTypeDefinition;
 		
-		var result = ResolveMethodOverloads(numArguments, numCandidates);
+		var result = ResolveMethodOverloads(numArguments, numCandidates, genericContext);
 		
 		if (methodCandidatesStack.Count > baseIndex)
 			methodCandidatesStack.RemoveRange(baseIndex, methodCandidatesStack.Count - baseIndex);
@@ -4795,7 +5629,7 @@ public class MethodGroupDefinition : SymbolDefinition
 		return result;
 	}
 	
-	public static MethodDefinition ResolveMethodOverloads(int numArguments, int numCandidates)
+	public static MethodDefinition ResolveMethodOverloads(int numArguments, int numCandidates, ConstructedTypeDefinition genericContext = null)
 	{
 		int argsBaseIndex = argumentTypesStack.Count - numArguments;
 		int baseIndex = methodCandidatesStack.Count - numCandidates;
@@ -4825,6 +5659,8 @@ public class MethodGroupDefinition : SymbolDefinition
 			var exactMatches = 0;
 			ParameterDefinition paramsArray = null;
 			var numParameters = UnityEngine.Mathf.Min(numArguments, parameters.Count);
+			if (numParameters == 0 && numArguments > 0)
+				continue;
 			for (var i = 0; i < numParameters; ++i)
 			{
 				var parameterIndex = i;
@@ -4869,6 +5705,9 @@ public class MethodGroupDefinition : SymbolDefinition
 					parameterType = parameters[parameterIndex].TypeOf() as TypeDefinitionBase;
 				}
 				parameterType = parameterType == null ? unknownType : parameterType.SubstituteTypeParameters(method);
+
+				if (genericContext != null && parameterType != null)
+					parameterType = parameterType.SubstituteTypeParameters(genericContext);
 				
 				if (parameterType.kind == SymbolKind.Delegate)
 				{
@@ -4892,18 +5731,31 @@ public class MethodGroupDefinition : SymbolDefinition
 				}
 
 				var argumentType = argumentTypesStack[argsBaseIndex + i];
-				if (argumentType == null || argumentType == unknownType)
-				{
-					exactMatches = -1;
-					break;
-				}
+				//if (argumentType == null || argumentType == unknownType)
+				//{
+				//	exactMatches = -1;
+				//	break;
+				//}
 
-				if (argumentType.IsSameType(parameterType))
+				bool isSameType = argumentType == null || argumentType == unknownType || argumentType.IsSameType(parameterType);
+				if (isSameType)
 				{
-					++exactMatches;
-					continue;
+					if (CsParser.isCSharp4)
+					{
+						++exactMatches;
+						continue;
+					}
+
+					bool isInParameter = parameters[parameterIndex].IsIn;
+					bool isInArgument = modifiersStack[argsBaseIndex + i] == Modifiers.In;
+					if (isInParameter == isInArgument)
+					{
+						++exactMatches;
+						continue;
+					}
 				}
-				if (!argumentType.CanConvertTo(parameterType))
+				var isRefOrOut = (modifiersStack[argsBaseIndex + i] & (Modifiers.Ref | Modifiers.Out)) != Modifiers.None;
+				if (!isRefOrOut && !isSameType && !argumentType.CanConvertTo(parameterType))
 				{
 					if (numCandidates == 1 && argumentType.kind == SymbolKind.TypeParameter)
 					{
@@ -4914,6 +5766,11 @@ public class MethodGroupDefinition : SymbolDefinition
 					
 					exactMatches = -1;
 					break;
+				}
+				else if (parameterType.kind == SymbolKind.Delegate)
+				{
+					++exactMatches;
+					continue;
 				}
 			}
 			if (exactMatches < 0)
@@ -4945,14 +5802,145 @@ public class MethodGroupDefinition : SymbolDefinition
 			var parameters = bestMatch.GetParameters();
 			for (var i = numArguments; i --> 0; )
 			{
-				var r = resolvedArgumentsStack[argsBaseIndex + i] as MethodGroupDefinition;
-				if (r != null && r.kind == SymbolKind.MethodGroup)
+				var parameterIndex = -1;
+				
+				var argModifier = modifiersStack[argsBaseIndex + i];
+				if (argModifier == Modifiers.Out && argumentNodesStack[argsBaseIndex + i] != null)
 				{
-					var parameterIndex = i;
-					if (parameterIndex >= firstNamedArgIndex)
+					var argumentValueNode = argumentNodesStack[argsBaseIndex + i].NodeAt(-1);
+					if (argumentValueNode != null)
 					{
-						var argName = namedArgumentsStack[argsBaseIndex + i];
+						var outVariableDeclarationNode = argumentValueNode.NodeAt(1);
+						if (outVariableDeclarationNode != null)
+						{
+							var localVariableTypeNode = outVariableDeclarationNode.NodeAt(0);
+							if (localVariableTypeNode != null)
+							{
+								var varNode = localVariableTypeNode.NodeAt(0);
+								if (varNode != null && (varNode.RuleName == "VAR" || varNode.RuleName == "nonAssignmentExpression"))
+								{
+									var firstLeaf = varNode.LeafAt(0) ?? varNode.GetFirstLeaf();
+									var varLeaf = firstLeaf != null && firstLeaf.token.text == "var" ? firstLeaf : null;
+									var discardLeaf = firstLeaf != null && firstLeaf.token.text == "_" ? firstLeaf : null;
+
+									if (parameterIndex == -1)
+									{
+										parameterIndex = i;
+										if (parameterIndex >= firstNamedArgIndex)
+										{
+											var argName = namedArgumentsStack[argsBaseIndex + i];
 					
+											parameterIndex = firstNamedArgIndex;
+											while (parameterIndex < parameters.Count)
+											{
+												if (argName == parameters[parameterIndex].name)
+													break;
+												++parameterIndex;
+											}
+											if (parameterIndex == parameters.Count)
+											{
+#if SI3_WARNINGS
+												Debug.LogError("Error finding parameter name " + argName + " in " + bestMatch.GetTooltipText());
+#endif
+											}
+										}
+									}
+									
+									if (parameterIndex < parameters.Count)
+									{
+										var argumentType = parameters[parameterIndex].TypeOf() as TypeDefinitionBase;
+										if (argumentType != null)
+											argumentType = argumentType.SubstituteTypeParameters(bestMatch);
+
+										if (varLeaf != null)
+										{
+											varLeaf.resolvedSymbol = argumentType;
+										}
+										else if (discardLeaf != null && (discardLeaf.resolvedSymbol == null || discardLeaf.resolvedSymbol == unknownSymbol))
+										{
+											var thisInstance = argumentType.GetThisInstance() as ThisReference;
+											if (thisInstance != null)
+											{
+												discardLeaf.token.tokenKind = SyntaxToken.Kind.ContextualKeyword;
+												discardLeaf.resolvedSymbol = thisInstance.GetDiscardVariable();
+												discardLeaf.semanticError = null;
+											}
+										}
+
+										resolvedArgumentsStack[argsBaseIndex + i] = argumentType;
+									}
+								}
+							}
+						}
+					}
+				}
+				
+				var r = resolvedArgumentsStack[argsBaseIndex + i] as MethodGroupDefinition;
+				if (r == null)
+				{
+					continue;
+				}
+				
+				if (r.kind == SymbolKind.MethodGroup)
+				{
+					if (parameterIndex == -1)
+					{
+						parameterIndex = i;
+						if (parameterIndex >= firstNamedArgIndex)
+						{
+							var argName = namedArgumentsStack[argsBaseIndex + i];
+					
+							parameterIndex = firstNamedArgIndex;
+							while (parameterIndex < parameters.Count)
+							{
+								if (argName == parameters[parameterIndex].name)
+									break;
+								++parameterIndex;
+							}
+							if (parameterIndex == parameters.Count)
+							{
+#if SI3_WARNINGS
+								Debug.LogError("Error finding parameter name " + argName + " in " + bestMatch.GetTooltipText());
+#endif
+							}
+						}
+					}
+					
+					if (parameterIndex < parameters.Count)
+					{
+						var parameterType = parameters[parameterIndex].TypeOf() as TypeDefinitionBase;
+						if (parameterType == null)
+							continue;
+
+						parameterType = parameterType.SubstituteTypeParameters(bestMatch);
+						if (parameterType == null)
+							continue;
+
+						if (genericContext != null)
+							parameterType = parameterType.SubstituteTypeParameters(genericContext);
+						if (parameterType == null)
+							continue;
+
+						var matchingMethod = r.FindMatchingMethod(parameterType);
+						if (matchingMethod == null)
+							continue;
+
+						resolvedArgumentsStack[argsBaseIndex + i] = matchingMethod;
+					}
+				}
+			}
+
+			if (firstNamedArgIndex < numArguments)
+			{
+				for (var i = numArguments; i --> 0; )
+				{
+					var argName = namedArgumentsStack[argsBaseIndex + i];
+					if (argName == null)
+						continue;
+
+					var parameterIndex = i;
+					if (argName != parameters[i].name)
+					{
 						parameterIndex = firstNamedArgIndex;
 						while (parameterIndex < parameters.Count)
 						{
@@ -4960,21 +5948,22 @@ public class MethodGroupDefinition : SymbolDefinition
 								break;
 							++parameterIndex;
 						}
-						if (parameterIndex == parameters.Count)
-						{
-#if SI3_WARNINGS
-							Debug.LogError("Error finding parameter name " + argName + " in " + bestMatch.GetTooltipText());
-#endif
-						}
 					}
-					
-					var matchingMethod = r.FindMatchingMethod(parameters[parameterIndex].TypeOf() as TypeDefinitionBase);
-					if (matchingMethod != null)
+
+					if (parameterIndex < parameters.Count)
 					{
-						resolvedArgumentsStack[argsBaseIndex + i] = matchingMethod;
+						var argNode = argumentNodesStack[argsBaseIndex + i];
+						var argNameNode = argNode.FirstChild as ParseTree.Node;
+						if (argNameNode == null)
+							continue;
+						var nameLeaf = argNameNode.FirstChild as ParseTree.Leaf;
+						if (nameLeaf == null)
+							continue;
+						nameLeaf.resolvedSymbol = parameters[parameterIndex];
 					}
 				}
 			}
+
 			return bestMatch;
 		}
 		if (numCandidates <= 1)
@@ -4999,7 +5988,12 @@ public class MethodGroupDefinition : SymbolDefinition
 				continue;
 			for (var i = p.Count; i --> 0; )
 			{
-				var pType = p[i].TypeOf();
+				var p1 = p[i];
+				var p2 = parameters[i];
+				if (p1.IsRef != p2.IsRef || p1.IsOut != p2.IsOut || p1.IsIn != p2.IsIn)
+					goto nextMethod;
+
+				var pType = p1.TypeOf();
 				if (!pType.IsSameType(parameterTypes[i]))
 					goto nextMethod;
 			}
@@ -5030,8 +6024,9 @@ public class MethodGroupDefinition : SymbolDefinition
 	private Dictionary<string, ConstructedMethodGroupDefinition> constructedMethodGroups;
 	public ConstructedMethodGroupDefinition ConstructMethodGroup(SymbolReference[] typeArgs)
 	{
+		var sb = StringBuilders.Alloc();
+		
 		var delimiter = string.Empty;
-		var sb = new StringBuilder();
 		if (typeArgs != null)
 		{
 			foreach (var arg in typeArgs)
@@ -5042,6 +6037,8 @@ public class MethodGroupDefinition : SymbolDefinition
 			}
 		}
 		var sig = sb.ToString();
+		
+		StringBuilders.Release(sb);
 
 		if (constructedMethodGroups == null)
 			constructedMethodGroups = new Dictionary<string, ConstructedMethodGroupDefinition>();
@@ -5231,7 +6228,8 @@ public class ConstructedMethodDefinition : MethodDefinition
 		if (typeParameters == null || typeParameters.Count == 0)
 			return name;
 
-		var sb = new StringBuilder();
+		var sb = StringBuilders.Alloc();
+		
 		sb.Append(name);
 		sb.Append('<');
 		sb.Append(TypeOfTypeParameter(typeParameters[0]).GetName());
@@ -5241,7 +6239,11 @@ public class ConstructedMethodDefinition : MethodDefinition
 			sb.Append(TypeOfTypeParameter(typeParameters[i]).GetName());
 		}
 		sb.Append('>');
-		return sb.ToString();
+		var result = sb.ToString();
+		
+		StringBuilders.Release(sb);
+		
+		return result;
 	}
 
 	public override ConstructedMethodDefinition ConstructMethod(SymbolReference[] typeArgs)
@@ -5310,8 +6312,13 @@ public abstract class InvokeableSymbolDefinition : SymbolDefinition
 			{
 				var passedWithOut = modifiers[baseIndex + i] == Modifiers.Out;
 				var passedWithRef = modifiers[baseIndex + i] == Modifiers.Ref;
-				if (param.IsOut != passedWithOut || param.IsRef != passedWithRef)
+				var passedWithIn = modifiers[baseIndex + i] == Modifiers.In;
+				if (param.IsOut != passedWithOut || param.IsRef != passedWithRef || passedWithIn && !param.IsIn)
 					return false;
+			}
+			else if (!param.IsOptional)
+			{
+				return false;
 			}
 
 			if (!asExtensionMethod || !param.IsThisParameter)
@@ -5647,7 +6654,7 @@ public class MethodDefinition : InvokeableSymbolDefinition
 	{
 		var result = base.AddDeclaration(symbol);
 		
-		if (IsStatic && result.kind == SymbolKind.Parameter && result.modifiers == Modifiers.This &&
+		if (IsStatic && result.kind == SymbolKind.Parameter && (result.modifiers & ~Modifiers.In) == Modifiers.This &&
 			symbol.parseTreeNode != null && symbol.parseTreeNode.parent != null && symbol.parseTreeNode.parent.childIndex == 0)
 		{
 			var parentType = (parentSymbol.kind == SymbolKind.MethodGroup ? parentSymbol.parentSymbol : parentSymbol) as TypeDefinitionBase;
@@ -5667,7 +6674,7 @@ public class MethodDefinition : InvokeableSymbolDefinition
 	
 	public override void RemoveDeclaration(SymbolDeclaration symbol)
 	{
-		if (IsExtensionMethod && symbol.kind == SymbolKind.Parameter && symbol.definition.modifiers == Modifiers.This &&
+		if (IsExtensionMethod && symbol.kind == SymbolKind.Parameter && (symbol.definition.modifiers & ~Modifiers.In) == Modifiers.This &&
 			(symbol.parseTreeNode == null || symbol.parseTreeNode.parent == null || symbol.parseTreeNode.parent.childIndex == 0))
 		{
 			isExtensionMethod = false;
@@ -5686,7 +6693,11 @@ public class MethodDefinition : InvokeableSymbolDefinition
 		if (returnType == null)
 		{
 			if (kind == SymbolKind.Constructor)
-				return parentSymbol as TypeDefinitionBase ?? unknownType;
+			{
+				var result = parentSymbol as TypeDefinitionBase ?? parentSymbol.parentSymbol as TypeDefinitionBase;
+				returnType = result != null ? new SymbolReference(result) : null;
+				return result ?? unknownType;
+			}
 
 			if (declarations != null)
 			{
@@ -5839,7 +6850,17 @@ public class MethodDefinition : InvokeableSymbolDefinition
 	public virtual ConstructedMethodDefinition ConstructMethod(SymbolReference[] typeArgs)
 	{
 		var numTypeParams = typeParameters != null ? typeParameters.Count : 0;
+		if (numTypeParams == 0)
+			return null;
+
 		var numTypeArgs = typeArgs != null ? typeArgs.Length : 0;
+		if (numTypeArgs == 0)
+		{
+#if SI3_WARNINGS
+			Debug.LogWarning("Calling ConstructMethod without type arguments!");
+#endif
+			return null;
+		}
 
 		var hash = 0;
 		if (typeArgs != null)
@@ -5847,7 +6868,7 @@ public class MethodDefinition : InvokeableSymbolDefinition
 			unchecked // ignore overflow
 			{
 				hash = (int)2166136261;
-				for (var i = 0; i < numTypeParams; ++i)
+				for (var i = 0; i < numTypeArgs; ++i)
 					hash = hash * 16777619 ^ (i < numTypeArgs ? typeArgs[i].definition : unknownType).GetHashCode();
 			}
 		}
@@ -5880,6 +6901,18 @@ public class MethodDefinition : InvokeableSymbolDefinition
 		result = new ConstructedMethodDefinition(this, typeArgs);
 		constructedMethods[hash] = result;
 		return result;
+	}
+	
+	public TypeDefinitionBase GetParentType()
+	{
+		if (parentSymbol == null)
+			return null;
+#if SI3_WARNINGS
+		if (parentSymbol.kind != SymbolKind.MethodGroup)
+			Debug.LogWarning("Expected method group - " + parentSymbol.GetTooltipText());
+#endif
+		var parentType = parentSymbol.parentSymbol as TypeDefinitionBase;
+		return parentType;
 	}
 }
 
@@ -5969,7 +7002,10 @@ public class NamespaceDefinition : SymbolDefinition
 									if (numTypeArguments > 0)
 									{
 										var constructedMethod = method.ConstructMethod(typeArgs);
-										extensionsMethods.Add(constructedMethod);
+										if (constructedMethod != null)
+											extensionsMethods.Add(constructedMethod);
+										else
+											extensionsMethods.Add(method);
 									}
 									else
 									{
@@ -6101,9 +7137,9 @@ public class NamespaceDefinition : SymbolDefinition
 		return tp;
 	}
 
-	public override string GetTooltipText()
+	public override string GetTooltipText(bool fullText = true)
 	{
-		return name == string.Empty ? "global namespace" : base.GetTooltipText();
+		return name == string.Empty ? "global namespace" : base.GetTooltipText(fullText);
 	}
 
 	public void GetExtensionMethodsCompletionData(TypeDefinitionBase targetType, Dictionary<string, SymbolDefinition> data, AccessLevelMask accessLevelMask)
@@ -6366,8 +7402,12 @@ public class BodyScope : LocalScope
 				return base.AddDeclaration(symbol);
 			break;
 		case SymbolKind.Variable:
+		case SymbolKind.CaseVariable:
 		case SymbolKind.ForEachVariable:
 		case SymbolKind.FromClauseVariable:
+		case SymbolKind.TupleDeconstructVariable:
+		case SymbolKind.OutVariable:
+		case SymbolKind.IsVariable:
 			return base.AddDeclaration(symbol);
 		}
 
@@ -6380,6 +7420,10 @@ public class BodyScope : LocalScope
 		{
 		case SymbolKind.LocalConstant:
 		case SymbolKind.Variable:
+		case SymbolKind.TupleDeconstructVariable:
+		case SymbolKind.OutVariable:
+		case SymbolKind.IsVariable:
+		case SymbolKind.CaseVariable:
 		case SymbolKind.ForEachVariable:
 		case SymbolKind.FromClauseVariable:
 			base.RemoveDeclaration(symbol);
@@ -6545,6 +7589,12 @@ public class NamespaceScope : Scope
 			declaration.importedNamespaces.Add(new SymbolReference(symbol.parseTreeNode.ChildAt(0)));
 			return null;
 		}
+		else if (symbol.kind == SymbolKind.ImportedStaticType)
+		{
+			if (symbol.parseTreeNode.numValidNodes >= 2)
+				declaration.importedStaticTypes.Add(new SymbolReference(symbol.parseTreeNode.ChildAt(1)));
+			return null;
+		}
 		else if (symbol.kind == SymbolKind.TypeAlias)
 		{
 			declaration.typeAliases.Add(new TypeAlias{
@@ -6572,6 +7622,20 @@ public class NamespaceScope : Scope
 				if (x != null && x.parent == node)
 				{
 					declaration.importedNamespaces.RemoveAt(i);
+					return;
+				}
+			}
+			return;
+		}
+		else if (symbol.kind == SymbolKind.ImportedStaticType)
+		{
+			var node = symbol.parseTreeNode;
+			for (var i = declaration.importedStaticTypes.Count; i --> 0;)
+			{
+				var x = declaration.importedStaticTypes[i].Node;
+				if (x != null && x.parent == node)
+				{
+					declaration.importedStaticTypes.RemoveAt(i);
 					return;
 				}
 			}
@@ -6644,6 +7708,55 @@ public class NamespaceScope : Scope
 			}
 		}
 		
+		if (leaf.resolvedSymbol == null)
+		{
+			if (leaf.parent.RuleName == "primaryExpressionStart")
+			{
+				var primaryExpressionPartNode = leaf.parent.nextSibling as ParseTree.Node;
+				if (primaryExpressionPartNode != null && primaryExpressionPartNode.RuleName == "primaryExpressionPart")
+				{
+					var argumentListNode = primaryExpressionPartNode.FindChildByName("arguments", "argumentList") as ParseTree.Node;
+					if (argumentListNode != null)
+					{
+						SymbolReference[] typeArgs = null;
+						ParseTree.Node typeArgumentListNode = leaf.parent.NodeAt(1);
+						if (typeArgumentListNode != null && typeArgumentListNode.RuleName == "typeArgumentList")
+						{
+							var numTypeArguments = typeArgumentListNode.numValidNodes / 2;
+							typeArgs = new SymbolReference[numTypeArguments];
+							for (int i = 0; i < numTypeArguments; ++i)
+								typeArgs[i] = new SymbolReference(typeArgumentListNode.ChildAt(1 + 2 * i));
+						}
+						ResolveAsImportedStaticMethod(leaf, null, argumentListNode, typeArgs, this);
+					}
+				}
+			}
+			
+			if (leaf.resolvedSymbol == null)
+			{
+				for (var i = declaration.importedStaticTypes.Count; i --> 0; )
+				{
+					var stRef = declaration.importedStaticTypes[i];
+					var importedType = stRef.definition as TypeDefinitionBase;
+					if (importedType == null)
+						continue;
+					
+					importedType.ResolveMember(leaf, this, numTypeArgs, false);
+					if (leaf.resolvedSymbol == null)
+						continue;
+					
+					if (leaf.resolvedSymbol.parentSymbol == importedType)
+					{
+						if (leaf.resolvedSymbol is TypeDefinitionBase)
+							break;
+						if (leaf.resolvedSymbol.IsStatic)
+							break;
+					}
+					leaf.resolvedSymbol = null;
+				}
+			}
+		}
+		
 		var parentScopeDef = parentScope != null ? ((NamespaceScope) parentScope).definition : null;
 		for (var nsDef = definition.parentSymbol as NamespaceDefinition;
 			leaf.resolvedSymbol == null && nsDef != null && nsDef != parentScopeDef;
@@ -6704,13 +7817,341 @@ public class NamespaceScope : Scope
 			parentScope.ResolveAttribute(leaf);
 	}
 	
-	public override SymbolDefinition ResolveAsExtensionMethod(ParseTree.Leaf invokedLeaf, SymbolDefinition invokedSymbol, TypeDefinitionBase memberOf, ParseTree.Node argumentListNode, SymbolReference[] typeArgs, Scope context)
+	public void CollectImportedStaticMethods(
+		string id,
+		SymbolReference[] typeArgs,
+		Scope context,
+		HashSet<MethodDefinition> methods)
 	{
-		if (invokedLeaf == null && (invokedSymbol == null || invokedSymbol.kind == SymbolKind.Error))
-			return null;
+		var numTypeArguments = typeArgs == null ? -1 : typeArgs.Length;
 		
-		var id = invokedSymbol != null && invokedSymbol.kind != SymbolKind.Error ? invokedSymbol.name : invokedLeaf != null ? SymbolDefinition.DecodeId(invokedLeaf.token.text) : "";
+		var contextAssembly = context.GetAssembly();
 		
+		for (var i = declaration.importedStaticTypes.Count; i --> 0; )
+		{
+			var typeDefinition = declaration.importedStaticTypes[i].definition;
+			if (typeDefinition == null
+				|| (typeDefinition.kind != SymbolKind.Class && typeDefinition.kind != SymbolKind.Struct)
+				|| !typeDefinition.IsValid())
+				continue;
+			
+			var accessLevelMask = AccessLevelMask.Public;
+			if (typeDefinition.Assembly != null && typeDefinition.Assembly.InternalsVisibleIn(contextAssembly))
+				accessLevelMask |= AccessLevelMask.Internal;
+			
+			if (!typeDefinition.IsAccessible(accessLevelMask))
+				continue;
+			
+			//if (contextType == parentType || parentType.IsSameOrParentOf(contextType))
+			//	accessLevelMask |= AccessLevelMask.Public | AccessLevelMask.Protected | AccessLevelMask.Private;
+			//else if (contextType.DerivesFrom(parentType))
+			//	accessLevelMask |= AccessLevelMask.Public | AccessLevelMask.Protected;
+			
+			SymbolDefinition member;
+			if (!typeDefinition.members.TryGetValue(id, numTypeArguments, out member))
+				continue;
+			if (member.kind != SymbolKind.MethodGroup)
+				continue;
+			var methodGroup = member as MethodGroupDefinition;
+			if (methodGroup == null)
+			{
+				Debug.LogError("Expected a method group: " + member.GetTooltipText());
+				continue;
+			}
+
+			foreach (var method in methodGroup.methods)
+			{
+				if (method.IsExtensionMethod || !method.IsStatic || !method.IsAccessible(accessLevelMask))
+					continue;
+
+				if (numTypeArguments > 0)
+				{
+					var constructedMethod = method.ConstructMethod(typeArgs);
+					methods.Add(constructedMethod ?? method);
+				}
+				else
+				{
+					methods.Add(method);
+				}
+			}
+		}
+	}
+
+	public override SymbolDefinition ResolveAsImportedStaticMethod(string id, ParseTree.Node argumentListNode, SymbolReference[] typeArgs, Scope context, ParseTree.Leaf invokedLeaf = null)
+	{
+		if (invokedLeaf != null && invokedLeaf.resolvedSymbol == null)
+			invokedLeaf.resolvedSymbol = SymbolDefinition.unknownSymbol;
+		
+		MethodDefinition firstAccessibleMethod = null;
+		
+		var importedStaticMethods = new HashSet<MethodDefinition>();
+		
+		MethodDefinition namedArgsError = null;
+		int numArguments = 0;
+		int argsBaseIndex = MethodGroupDefinition.modifiersStack.Count;
+
+		for (var nsScope = this; nsScope != null; nsScope = nsScope.parentScope as NamespaceScope)
+		{
+			CollectImportedStaticMethods(id, typeArgs, context, importedStaticMethods);
+			if (importedStaticMethods.Count == 0)
+				continue;
+
+			firstAccessibleMethod = importedStaticMethods.First();
+			
+			if (numArguments == 0)
+			{
+				numArguments = MethodGroupDefinition.ProcessArgumentListNode(argumentListNode, null);
+				namedArgsError = MethodGroupDefinition.CheckNamedArguments(numArguments);
+			}
+			
+			MethodDefinition resolved = namedArgsError;
+			if (resolved == null)
+			{
+				var candidatesStack = MethodGroupDefinition.methodCandidatesStack;
+				int baseIndex = candidatesStack.Count;
+				foreach (var method in importedStaticMethods)
+					if (numArguments == 0 || method.CanCallWith(numArguments, false))
+						candidatesStack.Add(method);
+				int numCandidates = candidatesStack.Count - baseIndex;
+
+				if (typeArgs == null)
+				{
+					for (var i = numCandidates; i --> 0;)
+					{
+						var candidate = candidatesStack[baseIndex + i];
+						if (candidate.NumTypeParameters == 0 || numArguments == 0)
+							continue;
+
+						candidate = MethodGroupDefinition.InferMethodTypeArguments(candidate, numArguments, invokedLeaf);
+						if (candidate == null)
+							candidatesStack.RemoveAt(baseIndex + i);
+						else
+							candidatesStack[baseIndex + i] = candidate;
+					}
+				}
+				else
+				{
+					for (var i = numCandidates; i-- > 0; )
+					{
+						var candidate = candidatesStack[baseIndex + i];
+						if (candidate.NumTypeParameters != 0)
+							continue;
+
+						candidatesStack.RemoveAt(baseIndex + i);
+					}
+				}
+				numCandidates = candidatesStack.Count - baseIndex;
+			
+				resolved = MethodGroupDefinition.ResolveMethodOverloads(numArguments, numCandidates);
+			
+				candidatesStack.RemoveRange(baseIndex, numCandidates);
+			}
+			
+			if (resolved != null && resolved.kind != SymbolKind.Error)
+			{
+				MethodGroupDefinition.modifiersStack.RemoveRange(argsBaseIndex, numArguments);
+				MethodGroupDefinition.argumentTypesStack.RemoveRange(argsBaseIndex, numArguments);
+				MethodGroupDefinition.resolvedArgumentsStack.RemoveRange(argsBaseIndex, numArguments);
+				MethodGroupDefinition.namedArgumentsStack.RemoveRange(argsBaseIndex, numArguments);
+				MethodGroupDefinition.argumentNodesStack.RemoveRange(argsBaseIndex, numArguments);
+				
+				if (invokedLeaf != null)
+					invokedLeaf.resolvedSymbol = resolved;
+				
+				return resolved;
+			}
+
+			importedStaticMethods.Clear();
+		}
+
+		MethodGroupDefinition.modifiersStack.RemoveRange(argsBaseIndex, numArguments);
+		MethodGroupDefinition.argumentTypesStack.RemoveRange(argsBaseIndex, numArguments);
+		MethodGroupDefinition.resolvedArgumentsStack.RemoveRange(argsBaseIndex, numArguments);
+		MethodGroupDefinition.namedArgumentsStack.RemoveRange(argsBaseIndex, numArguments);
+		MethodGroupDefinition.argumentNodesStack.RemoveRange(argsBaseIndex, numArguments);
+				
+		if (firstAccessibleMethod != null && invokedLeaf != null)
+		{
+			invokedLeaf.resolvedSymbol = firstAccessibleMethod;
+			invokedLeaf.semanticError = MethodGroupDefinition.unresolvedMethodOverload.name;
+		}
+		return null;
+	}
+
+	public override MethodDefinition FindDeconstructExtensionMethod(TypeDefinitionBase memberOf, int numOutParameters, Scope context)
+	{
+		MethodDefinition firstAccessibleMethod = null;
+		
+		var thisAssembly = GetAssembly();
+		
+		var extensionsMethods = new HashSet<MethodDefinition>();
+		
+		int numArguments = 0;
+		int argsBaseIndex = MethodGroupDefinition.modifiersStack.Count;
+
+		var parentNSScope = parentScope as NamespaceScope;
+		var parentNSDef = parentNSScope != null ? parentNSScope.definition : null;
+		for (var nsDef = definition;
+			nsDef != null && nsDef != parentNSDef;
+			nsDef = nsDef.parentSymbol as NamespaceDefinition)
+		{
+			thisAssembly.CollectExtensionMethods(nsDef, "Deconstruct", null, memberOf, extensionsMethods, context);
+			if (extensionsMethods.Count > 0)
+			{
+				firstAccessibleMethod = extensionsMethods.First();
+				
+				if (numArguments == 0)
+				{
+					MethodGroupDefinition.modifiersStack.Add(Modifiers.This);
+					MethodGroupDefinition.argumentTypesStack.Add(memberOf);
+					MethodGroupDefinition.resolvedArgumentsStack.Add(null);//extendedType.GetThisInstance());
+					MethodGroupDefinition.namedArgumentsStack.Add(null);
+					MethodGroupDefinition.argumentNodesStack.Add(null);
+
+					numArguments = numOutParameters + 1;
+					
+					for (var i = 0; i < numOutParameters; ++i)
+					{
+						MethodGroupDefinition.modifiersStack.Add(Modifiers.Out);
+						MethodGroupDefinition.argumentTypesStack.Add(null);
+						MethodGroupDefinition.resolvedArgumentsStack.Add(null);//extendedType.GetThisInstance());
+						MethodGroupDefinition.namedArgumentsStack.Add(null);
+						MethodGroupDefinition.argumentNodesStack.Add(null);
+					}
+				}
+				
+				MethodDefinition resolved = null;
+				{
+					var candidatesStack = MethodGroupDefinition.methodCandidatesStack;
+					int baseIndex = candidatesStack.Count;
+					foreach (var method in extensionsMethods)
+					{
+						if (method.ReturnType() == SymbolDefinition.builtInTypes_void
+							&& method.CanCallWith(numArguments, true))
+						{
+							candidatesStack.Add(method);
+						}
+					}
+					
+					int numCandidates = candidatesStack.Count - baseIndex;
+	
+					for (var i = numCandidates; i --> 0;)
+					{
+						var candidate = candidatesStack[baseIndex + i];
+						if (candidate.NumTypeParameters == 0)
+							continue;
+
+						candidate = MethodGroupDefinition.InferMethodTypeArguments(candidate, numArguments, null);
+						if (candidate == null)
+							candidatesStack.RemoveAt(baseIndex + i);
+						else
+							candidatesStack[baseIndex + i] = candidate;
+					}
+					numCandidates = candidatesStack.Count - baseIndex;
+				
+					resolved = MethodGroupDefinition.ResolveMethodOverloads(numArguments, numCandidates);
+				
+					candidatesStack.RemoveRange(baseIndex, numCandidates);
+				}
+				
+				if (resolved != null && resolved.kind != SymbolKind.Error)
+				{
+					MethodGroupDefinition.modifiersStack.RemoveRange(argsBaseIndex, numArguments);
+					MethodGroupDefinition.argumentTypesStack.RemoveRange(argsBaseIndex, numArguments);
+					MethodGroupDefinition.resolvedArgumentsStack.RemoveRange(argsBaseIndex, numArguments);
+					MethodGroupDefinition.namedArgumentsStack.RemoveRange(argsBaseIndex, numArguments);
+					MethodGroupDefinition.argumentNodesStack.RemoveRange(argsBaseIndex, numArguments);
+					
+					return resolved;
+				}
+			}
+
+			extensionsMethods.Clear();
+		}
+
+		var importedNamespaces = declaration.importedNamespaces;
+		for (var i = importedNamespaces.Count; i --> 0; )
+		{
+			var nsDef = importedNamespaces[i].definition as NamespaceDefinition;
+			if (nsDef != null)
+				thisAssembly.CollectExtensionMethods(nsDef, "Deconstruct", null, memberOf, extensionsMethods, context);
+		}
+		if (extensionsMethods.Count > 0)
+		{
+			if (firstAccessibleMethod == null)
+				firstAccessibleMethod = extensionsMethods.First();
+
+			if (numArguments == 0)
+			{
+				MethodGroupDefinition.modifiersStack.Add(Modifiers.This);
+				MethodGroupDefinition.argumentTypesStack.Add(memberOf);
+				MethodGroupDefinition.resolvedArgumentsStack.Add(null);//extendedType.GetThisInstance());
+				MethodGroupDefinition.namedArgumentsStack.Add(null);
+				MethodGroupDefinition.argumentNodesStack.Add(null);
+
+				numArguments = numOutParameters + 1;
+					
+				for (var i = 0; i < numOutParameters; ++i)
+				{
+					MethodGroupDefinition.modifiersStack.Add(Modifiers.Out);
+					MethodGroupDefinition.argumentTypesStack.Add(null);
+					MethodGroupDefinition.resolvedArgumentsStack.Add(null);//extendedType.GetThisInstance());
+					MethodGroupDefinition.namedArgumentsStack.Add(null);
+					MethodGroupDefinition.argumentNodesStack.Add(null);
+				}
+			}
+				
+			MethodDefinition resolved = null;
+			{
+				var candidatesStack = MethodGroupDefinition.methodCandidatesStack;
+				int baseIndex = candidatesStack.Count;
+				foreach (var method in extensionsMethods)
+					if (method.CanCallWith(numArguments, true))
+						candidatesStack.Add(method);
+				int numCandidates = candidatesStack.Count - baseIndex;
+	
+				for (var i = numCandidates; i --> 0; )
+				{
+					var candidate = candidatesStack[baseIndex + i];
+					if (candidate.NumTypeParameters == 0 || numArguments == 0)
+						continue;
+
+					candidate = MethodGroupDefinition.InferMethodTypeArguments(candidate, numArguments, null);
+					if (candidate == null)
+						candidatesStack.RemoveAt(baseIndex + i);
+					else
+						candidatesStack[baseIndex + i] = candidate;
+				}
+				numCandidates = candidatesStack.Count - baseIndex;
+				
+				resolved = MethodGroupDefinition.ResolveMethodOverloads(numArguments, numCandidates);
+				
+				candidatesStack.RemoveRange(baseIndex, numCandidates);
+			}
+			
+			if (resolved != null && resolved.kind != SymbolKind.Error)
+			{
+				MethodGroupDefinition.modifiersStack.RemoveRange(argsBaseIndex, numArguments);
+				MethodGroupDefinition.argumentTypesStack.RemoveRange(argsBaseIndex, numArguments);
+				MethodGroupDefinition.resolvedArgumentsStack.RemoveRange(argsBaseIndex, numArguments);
+				MethodGroupDefinition.namedArgumentsStack.RemoveRange(argsBaseIndex, numArguments);
+				MethodGroupDefinition.argumentNodesStack.RemoveRange(argsBaseIndex, numArguments);
+				
+				return resolved;
+			}
+		}
+		
+		MethodGroupDefinition.modifiersStack.RemoveRange(argsBaseIndex, numArguments);
+		MethodGroupDefinition.argumentTypesStack.RemoveRange(argsBaseIndex, numArguments);
+		MethodGroupDefinition.resolvedArgumentsStack.RemoveRange(argsBaseIndex, numArguments);
+		MethodGroupDefinition.namedArgumentsStack.RemoveRange(argsBaseIndex, numArguments);
+		MethodGroupDefinition.argumentNodesStack.RemoveRange(argsBaseIndex, numArguments);
+		
+		return base.FindDeconstructExtensionMethod(memberOf, numOutParameters, context);
+	}
+
+	public override SymbolDefinition ResolveAsExtensionMethod(string id, TypeDefinitionBase memberOf, ParseTree.Node argumentListNode, SymbolReference[] typeArgs, Scope context, ParseTree.Leaf invokedLeaf = null)
+	{
 		MethodDefinition firstAccessibleMethod = null;
 		
 		var thisAssembly = GetAssembly();
@@ -6763,6 +8204,17 @@ public class NamespaceScope : Scope
 								candidatesStack[baseIndex + i] = candidate;
 						}
 					}
+					else
+					{
+						for (var i = numCandidates; i-- > 0; )
+						{
+							var candidate = candidatesStack[baseIndex + i];
+							if (candidate.NumTypeParameters != 0)
+								continue;
+
+							candidatesStack.RemoveAt(baseIndex + i);
+						}
+					}
 					numCandidates = candidatesStack.Count - baseIndex;
 				
 					resolved = MethodGroupDefinition.ResolveMethodOverloads(numArguments, numCandidates);
@@ -6776,6 +8228,7 @@ public class NamespaceScope : Scope
 					MethodGroupDefinition.argumentTypesStack.RemoveRange(argsBaseIndex, numArguments);
 					MethodGroupDefinition.resolvedArgumentsStack.RemoveRange(argsBaseIndex, numArguments);
 					MethodGroupDefinition.namedArgumentsStack.RemoveRange(argsBaseIndex, numArguments);
+					MethodGroupDefinition.argumentNodesStack.RemoveRange(argsBaseIndex, numArguments);
 					
 					return resolved;
 				}
@@ -6827,6 +8280,17 @@ public class NamespaceScope : Scope
 							candidatesStack[baseIndex + i] = candidate;
 					}
 				}
+				else
+				{
+					for (var i = numCandidates; i-- > 0; )
+					{
+						var candidate = candidatesStack[baseIndex + i];
+						if (candidate.NumTypeParameters != 0)
+							continue;
+
+						candidatesStack.RemoveAt(baseIndex + i);
+					}
+				}
 				numCandidates = candidatesStack.Count - baseIndex;
 				
 				resolved = MethodGroupDefinition.ResolveMethodOverloads(numArguments, numCandidates);
@@ -6840,6 +8304,7 @@ public class NamespaceScope : Scope
 				MethodGroupDefinition.argumentTypesStack.RemoveRange(argsBaseIndex, numArguments);
 				MethodGroupDefinition.resolvedArgumentsStack.RemoveRange(argsBaseIndex, numArguments);
 				MethodGroupDefinition.namedArgumentsStack.RemoveRange(argsBaseIndex, numArguments);
+				MethodGroupDefinition.argumentNodesStack.RemoveRange(argsBaseIndex, numArguments);
 				
 				return resolved;
 			}
@@ -6849,15 +8314,16 @@ public class NamespaceScope : Scope
 		MethodGroupDefinition.argumentTypesStack.RemoveRange(argsBaseIndex, numArguments);
 		MethodGroupDefinition.resolvedArgumentsStack.RemoveRange(argsBaseIndex, numArguments);
 		MethodGroupDefinition.namedArgumentsStack.RemoveRange(argsBaseIndex, numArguments);
+		MethodGroupDefinition.argumentNodesStack.RemoveRange(argsBaseIndex, numArguments);
 		
 		if (parentScope != null)
 		{
-			var resolved = parentScope.ResolveAsExtensionMethod(invokedLeaf, invokedSymbol, memberOf, argumentListNode, typeArgs, context);
+			var resolved = parentScope.ResolveAsExtensionMethod(id, memberOf, argumentListNode, typeArgs, context, invokedLeaf);
 			if (resolved != null)
 				return resolved;
 		}
 		
-		if (firstAccessibleMethod != null)
+		if (firstAccessibleMethod != null && invokedLeaf != null)
 		{
 			invokedLeaf.resolvedSymbol = firstAccessibleMethod;
 			invokedLeaf.semanticError = MethodGroupDefinition.unresolvedMethodOverload.name;
@@ -6883,6 +8349,14 @@ public class NamespaceScope : Scope
 			var nsDef = i.definition as NamespaceDefinition;
 			if (nsDef != null)
 				nsDef.GetTypesOnlyCompletionData(data, AccessLevelMask.Any, context.assembly);
+		}
+		
+		foreach (var i in declaration.importedStaticTypes)
+		{
+			var typeDef = i.definition as TypeDefinitionBase;
+			if (typeDef == null)
+				continue;
+			typeDef.GetCompletionDataFromImportedType(data, AccessLevelMask.Any, context);
 		}
 		
 		if (parentScope != null)
@@ -7008,11 +8482,11 @@ public class MemberInitializerScope : Scope
 				if (target != null)
 				{
 					var targetSymbol = target.resolvedSymbol;
+					if (targetSymbol == null)
+						targetSymbol = SymbolDefinition.ResolveNode(target, parentScope);
 					if (targetSymbol != null)
 						targetSymbol = targetSymbol.TypeOf();
-					else
-						targetSymbol = SymbolDefinition.ResolveNode(target, parentScope);
-	
+
 					if (targetSymbol != null)
 						targetSymbol.ResolveMember(leaf, parentScope, 0, false);
 					return;
@@ -7077,6 +8551,26 @@ public class MemberInitializerScope : Scope
 	public override SymbolDefinition FindName(string symbolName, int numTypeParameters)
 	{
 		throw new InvalidOperationException("Calling FindName on MemberInitializerScope is not allowed!");
+	}
+}
+
+public class BaseScope : Scope
+{
+	public BaseScope(ParseTree.Node node) : base(node) {}
+	
+	public override SymbolDefinition AddDeclaration(SymbolDeclaration symbol)
+	{
+		return parentScope.AddDeclaration(symbol);
+	}
+
+	public override void RemoveDeclaration(SymbolDeclaration symbol)
+	{
+		parentScope.RemoveDeclaration(symbol);
+	}
+
+	public override SymbolDefinition FindName(string symbolName, int numTypeParameters)
+	{
+		return parentScope.FindName(symbolName, numTypeParameters);
 	}
 }
 
@@ -7175,6 +8669,27 @@ public class LocalScope : Scope
 			}
 		}
 		base.GetCompletionData(data, context);
+	}
+}
+
+public class SwitchSectionScope : LocalScope
+{
+	public SwitchSectionScope(ParseTree.Node node) : base(node) {}
+	
+	public override SymbolDefinition AddDeclaration(SymbolDeclaration symbol)
+	{
+		if (symbol.kind == SymbolKind.CaseVariable)
+			return base.AddDeclaration(symbol);
+		else
+			return parentScope.AddDeclaration(symbol);
+	}
+
+	public override void RemoveDeclaration(SymbolDeclaration symbol)
+	{
+		if (symbol.kind == SymbolKind.CaseVariable)
+			base.RemoveDeclaration(symbol);
+		else
+			parentScope.RemoveDeclaration(symbol);
 	}
 }
 
@@ -7287,7 +8802,31 @@ public class SymbolDefinition
 	/// </summary>
 	/// <remarks>Check for null!!!</remarks>
 	public List<SymbolDeclaration> declarations;
+
+	public static int GetHashID(string s)
+	{
+		unchecked
+		{
+			int hash1 = 5381;
+			int hash2 = hash1;
+			if (s != null)
+			{
+				int length = s.Length;
+				for (int i = 0; i < length; )
+				{
+					hash1 = ((hash1 << 5) + hash1) ^ s[i++];
+					hash2 = i < length ? ((hash2 << 5) + hash2) ^ s[i++] : hash2;
+				}
+			}
+			return hash1 + (hash2 * 1566083941);
+		}
+	}
 	
+	public int GetHashID()
+	{
+		return GetHashID(name);
+	}
+
 	public bool ContainsDeclaration(SymbolDeclaration symbol)
 	{
 		if (declarations == null)
@@ -7696,9 +9235,13 @@ public class SymbolDefinition
 				};
 				break;
 
+			case SymbolKind.CaseVariable:
 			case SymbolKind.ForEachVariable:
 			case SymbolKind.FromClauseVariable:
 			case SymbolKind.Variable:
+			case SymbolKind.TupleDeconstructVariable:
+			case SymbolKind.OutVariable:
+			case SymbolKind.IsVariable:
 			case SymbolKind.Field:
 			case SymbolKind.ConstantField:
 			case SymbolKind.LocalConstant:
@@ -7812,7 +9355,8 @@ public class SymbolDefinition
 		if (typeParameters == null || typeParameters.Count == 0)
 			return name;
 
-		var sb = new StringBuilder();
+		var sb = StringBuilders.Alloc();
+		
 		sb.Append(name);
 		sb.Append('<');
 		sb.Append(typeParameters[0].GetName());
@@ -7822,7 +9366,11 @@ public class SymbolDefinition
 			sb.Append(typeParameters[i].GetName());
 		}
 		sb.Append('>');
-		return sb.ToString();
+		var result = sb.ToString();
+		
+		StringBuilders.Release(sb);
+		
+		return result;
 	}
 
 	public string ReflectionName
@@ -7841,6 +9389,11 @@ public class SymbolDefinition
 	public virtual SymbolDefinition GetGenericSymbol()
 	{
 		return this;
+	}
+	
+	public virtual TypeDefinitionBase GetTypeArgument(int index)
+	{
+		return null;
 	}
 	
 	public virtual TypeDefinitionBase SubstituteTypeParameters(SymbolDefinition context)
@@ -7922,9 +9475,20 @@ public class SymbolDefinition
 
 	public SymbolDefinition ImportReflectedConstructor(ConstructorInfo info)
 	{
-		var imported = new ReflectedConstructor(info, this);
-		members[".ctor", 0] = imported;
-		return imported;
+		SymbolDefinition methodGroup;
+		members.TryGetValue(".ctor", 0, out methodGroup);
+		var asMethodGroup = methodGroup as MethodGroupDefinition;
+		if (methodGroup != null && asMethodGroup == null)
+			Debug.LogError("Si3 Error Importing Constructor: " + info);
+		if (asMethodGroup == null)
+		{
+			asMethodGroup = Create(SymbolKind.MethodGroup, ".ctor") as MethodGroupDefinition;
+			asMethodGroup.parentSymbol = this;
+			members[".ctor", 0] = asMethodGroup;
+		}
+		var imported = new ReflectedConstructor(info, asMethodGroup);
+		asMethodGroup.AddMethod(imported);
+		return asMethodGroup;
 	}
 
 	public void AddMember(SymbolDefinition symbol)
@@ -7944,7 +9508,7 @@ public class SymbolDefinition
 	{
 		var member = Create(symbol);
 		var symbolName = member.name;
-		if (member.kind == SymbolKind.Method)
+		if (member.kind == SymbolKind.Method || member.kind == SymbolKind.Constructor || member.kind == SymbolKind.Operator)
 		{
 			SymbolDefinition methodGroup = null;
 			if (!members.TryGetValue(symbolName, 0, out methodGroup) || !(methodGroup is MethodGroupDefinition))
@@ -7972,7 +9536,11 @@ public class SymbolDefinition
 			if (member.kind == SymbolKind.Delegate)
 			{
 				var memberAsDelegate = (DelegateTypeDefinition) member;
-				memberAsDelegate.returnType = new SymbolReference(symbol.parseTreeNode.ChildAt(1));
+				var typeNode = symbol.parseTreeNode.FindChildByName("type");
+				if (typeNode == null)
+					memberAsDelegate.returnType = null;
+				else
+					memberAsDelegate.returnType = new SymbolReference(typeNode);
 			}
 			else if (member.kind == SymbolKind.Enum)
 			{
@@ -8037,7 +9605,7 @@ public class SymbolDefinition
 
 		var addToSymbol = parentNamespace ?? this;
 		if (!addToSymbol.members.TryGetValue(symbol.Name, symbol.kind == SymbolKind.Method ? 0 : symbol.numTypeParameters, out definition) ||
-			(symbol.kind == SymbolKind.Operator || symbol.kind == SymbolKind.Method) && definition is MethodGroupDefinition ||
+			(symbol.kind == SymbolKind.Operator || symbol.kind == SymbolKind.Method || symbol.kind == SymbolKind.Constructor) && definition is MethodGroupDefinition ||
 			definition is ReflectedMember || definition is ReflectedType ||
 			definition is ReflectedMethod || definition is ReflectedConstructor ||
 			!definition.IsValid())
@@ -8261,6 +9829,8 @@ public class SymbolDefinition
 				parametersText += "ref ";
 			else if (param.IsOut)
 				parametersText += "out ";
+			else if (param.IsIn)
+				parametersText += "in ";
 			else if (param.IsParametersArray)
 				parametersText += "params ";
 			parametersText += typeOfP.GetName() + " " + param.name;
@@ -8309,7 +9879,7 @@ public class SymbolDefinition
 		return result;
 	}
 
-	public virtual string GetTooltipText()
+	public virtual string GetTooltipText(bool fullText = true)
 	{
 		if (kind == SymbolKind.Null)
 			return null;
@@ -8321,8 +9891,10 @@ public class SymbolDefinition
 			return name;
 
 		var kindText = string.Empty;
-		switch (kind)
+		if (fullText)
 		{
+			switch (kind)
+			{
 			case SymbolKind.Namespace: return tooltipText = "namespace " + FullName;
 			case SymbolKind.Constructor: kindText = "(constructor) "; break;
 			case SymbolKind.Destructor: kindText = "(destructor) "; break;
@@ -8331,6 +9903,10 @@ public class SymbolDefinition
 			case SymbolKind.Property: kindText = "(property) "; break;
 			case SymbolKind.Event: kindText = "(event) "; break;
 			case SymbolKind.Variable:
+			case SymbolKind.TupleDeconstructVariable:
+			case SymbolKind.OutVariable:
+			case SymbolKind.IsVariable:
+			case SymbolKind.CaseVariable:
 			case SymbolKind.ForEachVariable:
 			case SymbolKind.FromClauseVariable:
 			case SymbolKind.CatchParameter: kindText = "(local variable) "; break;
@@ -8340,9 +9916,11 @@ public class SymbolDefinition
 			case SymbolKind.Accessor: kindText = "(accessor) "; break;
 			case SymbolKind.Label: return tooltipText = "(label) " + name;
 			case SymbolKind.Method: kindText = IsExtensionMethod ? "(extension) " : ""; break;
+			}
 		}
-
+		
 		var typeOf = kind == SymbolKind.Accessor || kind == SymbolKind.MethodGroup ? null : TypeOf();
+
 		var typeName = string.Empty;
 		if (typeOf != null && kind != SymbolKind.Namespace && kind != SymbolKind.Constructor && kind != SymbolKind.Destructor)
 		{
@@ -8369,6 +9947,13 @@ public class SymbolDefinition
 			{
 				var typeParent = parent.parentSymbol as TypeDefinitionBase;
 				parentName = typeParent != null ? typeParent.GetName() : null;
+
+				if (parent.NumTypeParameters > 0)
+				{
+					if (!string.IsNullOrEmpty(parentName))
+						parentText = parentName + ".";
+					parentName += parent.GetName();
+				}
 			}
 			else if (kind == SymbolKind.Method && tooltipAsExtensionMethod)
 			{
@@ -8393,8 +9978,8 @@ public class SymbolDefinition
 		}
 		else if (kind == SymbolKind.Constructor)
 		{
-			nameText = parent.name + "(";
-			parametersEnd = ")";
+			nameText = parent.name + (parameters.Count == 1 ? "( " : "(");
+			parametersEnd = (parameters.Count == 1 ? " )" : ")");
 		}
 		else if (kind == SymbolKind.Destructor)
 		{
@@ -8410,26 +9995,33 @@ public class SymbolDefinition
 			nameText += (parameters.Count == 1 ? "( " : "(");
 			parametersEnd = (parameters.Count == 1 ? " )" : ")");
 		}
+		else if (kind == SymbolKind.Instance && this is DiscardVariable)
+		{
+			kindText = "(discard) ";
+		}
 
 		if (parameters != null)
 		{
-			parametersText = PrintParameters(parameters);
+			parametersText = PrintParameters(parameters, !fullText);
 		}
 
 		tooltipText = kindText + typeName + parentText + nameText + parametersText + parametersEnd;
-		
-		tooltipText += DebugValue();
 
-		if (typeOf != null && typeOf.kind == SymbolKind.Delegate)
+		if (fullText)
 		{
-			tooltipText += "\n\nDelegate info\n";
-			tooltipText += typeOf.GetDelegateInfoText();
-		}
-
-		var xmlDocs = GetXmlDocs();
-		if (!string.IsNullOrEmpty(xmlDocs))
-		{
-		    tooltipText += "\n\n" + xmlDocs;
+			tooltipText += DebugValue();
+	
+			if (typeOf != null && typeOf.kind == SymbolKind.Delegate)
+			{
+				tooltipText += "\n\nDelegate info\n";
+				tooltipText += typeOf.GetDelegateInfoText();
+			}
+	
+			var xmlDocs = GetXmlDocs();
+			if (!string.IsNullOrEmpty(xmlDocs))
+			{
+			    tooltipText += "\n\n" + xmlDocs;
+			}
 		}
 
 		return tooltipText;
@@ -8652,27 +10244,36 @@ public class SymbolDefinition
 		return result;
 #endif
 		
-	    //var xml = new System.Xml.XmlDocument();
-	    //xml.Load(UnityEngine.Application.dataPath + "/FlipbookGames/ScriptInspector2/Editor/EditorResources/XmlDocs/UnityEngine.xml");
-	    //var summary = xml.SelectSingleNode("/doc/members/member[@name = 'T:" + FullName + "']/summary");
-	    //if (summary != null)
-	    //    return summary.InnerText;
-	    //return null;
+		//var xml = new System.Xml.XmlDocument();
+		//xml.Load(UnityEngine.Application.dataPath + "/FlipbookGames/ScriptInspector2/Editor/EditorResources/XmlDocs/UnityEngine.xml");
+		//var summary = xml.SelectSingleNode("/doc/members/member[@name = 'T:" + FullName + "']/summary");
+		//if (summary != null)
+		//    return summary.InnerText;
+		//return null;
 	}
 
+	private string unityHelpName;
 	public string UnityHelpName
 	{
 		get
 		{
+			if (unityHelpName != null)
+			{
+				if (unityHelpName == "")
+					return null;
+				return unityHelpName;
+			}
+			unityHelpName = "";
+
 			if (kind == SymbolKind.TypeParameter)
 				return null;
 			
 			var result = FullName;
 			if (result == null)
 				return null;
-			if (result.StartsWith("UnityEngine.", StringComparison.Ordinal))
+			if (result.FastStartsWith("UnityEngine."))
 				result = result.Substring("UnityEngine.".Length);
-			else if (result.StartsWith("UnityEditor.", StringComparison.Ordinal))
+			else if (result.FastStartsWith("UnityEditor."))
 				result = result.Substring("UnityEditor.".Length);
 			else
 				return null;
@@ -8681,12 +10282,13 @@ public class SymbolDefinition
 				result = result.Substring(0, result.LastIndexOf(".", StringComparison.Ordinal) + 1) + "Index_operator";
 			else if (kind == SymbolKind.Constructor)
 				result = result.Substring(0, result.LastIndexOf(".", StringComparison.Ordinal)) + "-ctor";
-			else if ((kind == SymbolKind.Field || kind == SymbolKind.Property) && parentSymbol.kind != SymbolKind.Enum)
+			else if ((kind == SymbolKind.Field || kind == SymbolKind.Property || kind == SymbolKind.Event) && parentSymbol.kind != SymbolKind.Enum)
 				result = result.Substring(0, result.LastIndexOf(".", StringComparison.Ordinal)) + "-" + name;
 			
 			if (kind == SymbolKind.Class && NumTypeParameters > 0)
 				name += "_" + NumTypeParameters;
-			
+
+			unityHelpName = result;
 			return result;
 		}
 	}
@@ -8710,7 +10312,8 @@ public class SymbolDefinition
 	{
 		get
 		{
-			var sb = new StringBuilder();
+			var sb = StringBuilders.Alloc();
+			
 			switch (kind)
 			{
 				case SymbolKind.Namespace:
@@ -8804,7 +10407,11 @@ public class SymbolDefinition
 				}
 				sb.Append(")");
 			}
-			return sb.ToString();
+			var result = sb.ToString();
+			
+			StringBuilders.Release(sb);
+			
+			return result;
 		}
 	}
 	
@@ -8818,7 +10425,7 @@ public class SymbolDefinition
 				return kv.Key;
 		
 		var thisPath = new List<SymbolDefinition>();
-		for (var parent = this; parent != null; parent = parent.parentSymbol)
+		for (var parent = this; parent != null && !(parent is AssemblyDefinition); parent = parent.parentSymbol)
 		{
 			if (parent is MethodGroupDefinition)
 				parent = parent.parentSymbol;
@@ -8902,7 +10509,8 @@ public class SymbolDefinition
 		
 	namespaceIsImported:
 		
-		var sb = new StringBuilder();
+		var sb = StringBuilders.Alloc();
+		
 		for (var i = thisPath.Count; i --> 0; )
 		{
 			sb.Append(thisPath[i].name);
@@ -8926,7 +10534,11 @@ public class SymbolDefinition
 			if (i > 0)
 				sb.Append('.');
 		}
-		return sb.ToString();
+		var result = sb.ToString();
+		
+		StringBuilders.Release(sb);
+		
+		return result;
 	}
 
 	public string FullName
@@ -8935,6 +10547,9 @@ public class SymbolDefinition
 		{
 			if (parentSymbol != null)
 			{
+				if (parentSymbol is AssemblyDefinition)
+					return name;
+				
 				var parentFullName = (parentSymbol is MethodGroupDefinition)
 					? (parentSymbol.parentSymbol ?? unknownSymbol).FullName
 					: parentSymbol.FullName;
@@ -8942,6 +10557,8 @@ public class SymbolDefinition
 					return parentFullName;
 				if (string.IsNullOrEmpty(parentFullName))
 					return name;
+				if (name[0] == '.')
+					return parentFullName + name;
 				return parentFullName + "." + name;
 			}
 			return name;
@@ -8954,6 +10571,9 @@ public class SymbolDefinition
 		{
 			if (parentSymbol != null)
 			{
+				if (parentSymbol is AssemblyDefinition)
+					return ReflectionName;
+				
 				var parentFullName = (parentSymbol is MethodGroupDefinition)
 					? (parentSymbol.parentSymbol ?? unknownSymbol).FullReflectionName
 					: parentSymbol.FullReflectionName;
@@ -8969,9 +10589,11 @@ public class SymbolDefinition
 
 	public string Dump()
 	{
-		var sb = new StringBuilder();
+		var sb = StringBuilders.Alloc();
 		Dump(sb, string.Empty);
-		return sb.ToString();
+		var result = sb.ToString();
+		StringBuilders.Release(sb);
+		return result;
 	}
 
 	protected virtual void Dump(StringBuilder sb, string indent)
@@ -9058,6 +10680,44 @@ public class SymbolDefinition
 	
 	private static SymbolDefinition ResolveExpression(string operatorMethodName, SymbolDefinition lhs, SymbolDefinition rhs)
 	{
+		var result = _ResolveExpression(operatorMethodName, lhs, rhs);
+		if (result != null && result.TypeOf() != unknownType)
+			return result;
+		
+		TypeDefinitionBase lhsType = lhs.TypeOf() as ConstructedTypeDefinition;
+		TypeDefinitionBase rhsType = rhs.TypeOf() as ConstructedTypeDefinition;
+		if ((lhsType == null || lhsType.GetGenericSymbol() != builtInTypes_Nullable) &&
+			(rhsType == null || rhsType.GetGenericSymbol() != builtInTypes_Nullable))
+		{
+			return null;
+		}
+		
+		if (lhsType != null && lhsType.GetGenericSymbol() == builtInTypes_Nullable)
+		{
+			lhsType = lhsType.GetTypeArgument(0);
+			lhs = lhsType.GetThisInstance();
+		}
+		if (rhsType != null && rhsType.GetGenericSymbol() == builtInTypes_Nullable)
+		{
+			rhsType = rhsType.GetTypeArgument(0);
+			rhs = rhsType.GetThisInstance();
+		}
+		
+		result = _ResolveExpression(operatorMethodName, lhs, rhs);
+		if (result == null)
+			return null;
+		
+		var resultType = result.TypeOf() as TypeDefinitionBase;
+		if (resultType == null || resultType.kind == SymbolKind.Error)
+			return null;
+		
+		resultType = resultType.MakeNullableType();
+		result = resultType.GetThisInstance();
+		return result;
+	}
+
+	private static SymbolDefinition _ResolveExpression(string operatorMethodName, SymbolDefinition lhs, SymbolDefinition rhs)
+	{
 		var lhsType = lhs.TypeOf() as TypeDefinitionBase;
 		var rhsType = rhs.TypeOf() as TypeDefinitionBase;
 		var argsBaseIndex = MethodGroupDefinition.resolvedArgumentsStack.Count;
@@ -9065,6 +10725,7 @@ public class SymbolDefinition
 		var argumentTypesStack = MethodGroupDefinition.argumentTypesStack;
 		var resolvedArgumentsStack = MethodGroupDefinition.resolvedArgumentsStack;
 		var modifiersStack = MethodGroupDefinition.modifiersStack;
+		var argumentsStack = MethodGroupDefinition.argumentNodesStack;
 		
 		argumentTypesStack.Add(lhsType);
 		argumentTypesStack.Add(rhsType);
@@ -9074,6 +10735,8 @@ public class SymbolDefinition
 		modifiersStack.Add(Modifiers.None);
 		MethodGroupDefinition.namedArgumentsStack.Add(null);
 		MethodGroupDefinition.namedArgumentsStack.Add(null);
+		argumentsStack.Add(null);
+		argumentsStack.Add(null);
 		
 		var candidatesStack = MethodGroupDefinition.methodCandidatesStack;
 		int lhsBaseIndex = candidatesStack.Count;
@@ -9145,6 +10808,7 @@ public class SymbolDefinition
 				argumentTypesStack.RemoveRange(argsBaseIndex, 2);
 				resolvedArgumentsStack.RemoveRange(argsBaseIndex, 2);
 				MethodGroupDefinition.namedArgumentsStack.RemoveRange(argsBaseIndex, 2);
+				argumentsStack.RemoveRange(argsBaseIndex, 2);
 				
 				return result;
 			}
@@ -9159,6 +10823,7 @@ public class SymbolDefinition
 		argumentTypesStack.RemoveRange(argsBaseIndex, 2);
 		resolvedArgumentsStack.RemoveRange(argsBaseIndex, 2);
 		MethodGroupDefinition.namedArgumentsStack.RemoveRange(argsBaseIndex, 2);
+		argumentsStack.RemoveRange(argsBaseIndex, 2);
 		
 		var returnType = resolvedOverload.ReturnType();
 		return returnType == null ? null : returnType.GetThisInstance();
@@ -9190,6 +10855,19 @@ public class SymbolDefinition
 	public static TypeDefinition builtInTypes_Exception;
 	public static TypeDefinition builtInTypes_Enum;
 
+	public static TypeDefinition builtInTypes_Task;
+	public static TypeDefinition builtInTypes_Task_1;
+	public static TypeDefinition builtInTypes_INotifyCompletion;
+	
+	public static TypeDefinition builtInTypes_ValueTuple_1;
+	public static TypeDefinition builtInTypes_ValueTuple_2;
+	public static TypeDefinition builtInTypes_ValueTuple_3;
+	public static TypeDefinition builtInTypes_ValueTuple_4;
+	public static TypeDefinition builtInTypes_ValueTuple_5;
+	public static TypeDefinition builtInTypes_ValueTuple_6;
+	public static TypeDefinition builtInTypes_ValueTuple_7;
+	public static TypeDefinition builtInTypes_ValueTuple_8;
+
 	//public static HashSet<string> missingResolveNodePaths = new HashSet<string>();
 	
 	public static SymbolDefinition ResolveNodeAsConstructor(ParseTree.BaseNode oceNode, Scope scope, SymbolDefinition asMemberOf)
@@ -9206,17 +10884,60 @@ public class SymbolDefinition
 			return null;
 
 		var constructor = asMemberOf.FindName(".ctor", 0, false);
+		var asConstructedType = asMemberOf as ConstructedTypeDefinition;
+		if (asConstructedType != null && constructor != null)
+		{
+			constructor = asConstructedType.GetConstructedMember(constructor);
+		}
+
 		if (constructor == null || constructor.parentSymbol != asMemberOf)
-			constructor = ((TypeDefinitionBase) asMemberOf).GetDefaultConstructor();
-		if (constructor is MethodGroupDefinition)
+		{
+			var type = asMemberOf as TypeDefinitionBase;
+			constructor = type != null ? type.GetDefaultConstructor() : null;
+		}
+		if (constructor.GetGenericSymbol() is MethodGroupDefinition)
 		{
 			if (node1.RuleName == "arguments")
+			{
 				constructor = ResolveNode(node1, scope, constructor);
+			}
+			else
+			{
+				var type = asMemberOf as TypeDefinitionBase;
+				constructor = type != null ? type.GetDefaultConstructor() : null;
+			}
 		}
 		else if (node1.RuleName == "arguments")
 		{
 			for (var i = 1; i < node1.numValidNodes - 1; ++i)
 				ResolveNode(node1.ChildAt(i), scope, constructor);
+		}
+
+		//if (asConstructedType != null)
+		//{
+		//	constructor = asConstructedType.GetConstructedMember(constructor);
+		//}
+
+		if (node1.RuleName == "arguments" && constructor != null)
+		{
+			ParseTree.Leaf constructorLeaf = null;
+			
+			var typeNameNode = node.FindPreviousNode() as ParseTree.Node;
+			if (typeNameNode != null)
+				typeNameNode = typeNameNode.NodeAt(0);
+			if (typeNameNode != null && typeNameNode.RuleName == "typeName")
+			{
+				var lastTypeOrGenericNode = typeNameNode.NodeAt(0).NodeAt(-1);
+				if (lastTypeOrGenericNode != null && lastTypeOrGenericNode.RuleName == "typeOrGeneric")
+					constructorLeaf = lastTypeOrGenericNode.LeafAt(0);
+			}
+
+			if (constructorLeaf != null)
+			{
+				var argumentListNode = node1.numValidNodes > 2 ? node1.NodeAt(1) : null;
+				if (argumentListNode != null)
+					ReResolveImplicitlyTypedArguments(argumentListNode, constructor);
+			}
 		}
 
 		if (node.RuleName != "arguments" && node.numValidNodes == 2)
@@ -9252,6 +10973,24 @@ public class SymbolDefinition
 					var iEnumerableTypeDef = builtInTypes_IEnumerable;
 					if (enumerableType.DerivesFrom(iEnumerableTypeDef))
 						return builtInTypes_object;
+					
+					var getEnumeratorMethod = enumerableType.FindMethod("GetEnumerator", 0, 0, true);
+					if (getEnumeratorMethod != null && getEnumeratorMethod.IsPublic)
+					{
+						var enumeratorType = getEnumeratorMethod.ReturnType();
+						if (enumeratorType != null)
+						{
+							var moveNextMethod = enumeratorType.FindMethod("MoveNext", 0, 0, true);
+							if (moveNextMethod != null && moveNextMethod.IsPublic && moveNextMethod.ReturnType() == builtInTypes_bool)
+							{
+								var currentProperty = enumeratorType.FindProperty("Current", true);
+								if (currentProperty != null && currentProperty.IsPublic)
+								{
+									return currentProperty.TypeOf() as TypeDefinitionBase ?? unknownType;
+								}
+							}
+						}
+					}
 				}
 			}
 		}
@@ -9326,7 +11065,7 @@ public class SymbolDefinition
 					
 					if (argumentListNode != null)
 					{
-						ReResolveImplicitlyTypedArguments(argumentListNode);
+						ReResolveImplicitlyTypedArguments(argumentListNode, result);
 					}
 				}
 
@@ -9379,7 +11118,7 @@ public class SymbolDefinition
 
 					if (argumentListNode != null)
 					{
-						ReResolveImplicitlyTypedArguments(argumentListNode);
+						ReResolveImplicitlyTypedArguments(argumentListNode, result);
 					}
 				}
 
@@ -9387,7 +11126,7 @@ public class SymbolDefinition
 			}
 		}
 
-		if (invokedSymbol.kind != SymbolKind.Method && invokedSymbol.kind != SymbolKind.Error)
+		if (invokedSymbol.kind != SymbolKind.Method && invokedSymbol.kind != SymbolKind.Constructor && invokedSymbol.kind != SymbolKind.Error)
 		{
 			var typeOf = invokedSymbol.TypeOf() as TypeDefinitionBase;
 			if (typeOf == null || typeOf.kind == SymbolKind.Error)
@@ -9405,7 +11144,7 @@ public class SymbolDefinition
 		return result;
 	}
 	
-	private static void ReResolveImplicitlyTypedArguments(ParseTree.Node argumentListNode)
+	private static void ReResolveImplicitlyTypedArguments(ParseTree.Node argumentListNode, SymbolDefinition context)
 	{
 		for (var i = 0; i < argumentListNode.numValidNodes; i += 2)
 		{
@@ -9415,6 +11154,33 @@ public class SymbolDefinition
 			var argumentValueNode = argumentNode.NodeAt(-1);
 			if (argumentValueNode == null)
 				continue;
+			if (argumentValueNode.numValidNodes > 1)
+			{
+				if (argumentValueNode.ChildAt(0).IsLit("out"))
+				{
+					var nextLeaf = argumentValueNode.ChildAt(1).GetFirstLeaf();
+					if (nextLeaf != null && nextLeaf.token.tokenKind == SyntaxToken.Kind.ContextualKeyword && nextLeaf.token.text == "_")
+					{
+						if (nextLeaf.resolvedSymbol != null)
+						{
+							var argumentType = nextLeaf.resolvedSymbol.TypeOf() as TypeDefinitionBase;
+							if (argumentType != null)
+							{
+								argumentType = argumentType.SubstituteTypeParameters(context);
+								if (argumentType != null)
+								{
+									var thisInstance = argumentType.GetThisInstance() as ThisReference;
+									if (thisInstance != null)
+									{
+										nextLeaf.resolvedSymbol = thisInstance.GetDiscardVariable();
+									}
+								}
+							}
+						}
+					}
+				}
+				continue;
+			}
 			var expressionNode = argumentValueNode.NodeAt(0);
 			if (expressionNode == null || expressionNode.RuleName != "expression")
 				continue;
@@ -9470,9 +11236,225 @@ public class SymbolDefinition
 		"lambdaExpression",
 		"lambdaExpressionBody"
 	};
-	
-	public static SymbolDefinition ResolveNode(ParseTree.BaseNode baseNode, Scope scope = null, SymbolDefinition asMemberOf = null, int numTypeArguments = 0, bool asTypeOnly = false)
+
+	private static ParseTree.Leaf FindMethodLeafFromArgument(ParseTree.Node node)
 	{
+		ParseTree.Leaf methodLeaf = null;
+
+		var argumentsNode = node.FindParentByName("arguments");
+		var varDeclsNode = argumentsNode.parent.FindPreviousNode() as ParseTree.Node;
+		if (varDeclsNode.RuleName == "primaryExpressionStart")
+		{
+			methodLeaf = varDeclsNode.GetFirstLeaf(true);
+		}
+		else
+		{
+			var accessIdentifierNode = varDeclsNode.NodeAt(0);
+			if (accessIdentifierNode != null && accessIdentifierNode.RuleName == "accessIdentifier")
+			{
+				methodLeaf = accessIdentifierNode.LeafAt(1);
+			}
+			else
+			{
+#if SI3_WARNINGS
+				Debug.LogError(varDeclsNode);
+#endif
+			}
+		}
+
+		return methodLeaf;
+	}
+	
+	static TypeDefinitionBase ResolveDeconstructList(ParseTree.Node listNode, TypeDefinitionBase expressionType, Scope scope)
+	{
+		//var isImplicitDeconstruction = listNode.RuleName == "implicitDeconstructList";
+		
+		var elementTypes = new List<SymbolReference>(16);
+		var tupleType = expressionType as TupleTypeDefinition;
+		var tupleTypeArity = tupleType != null ? tupleType.Arity : 0;
+		
+		var arity = listNode.numValidNodes / 2;
+		
+		var extensionOffset = 0;
+		MethodDefinition deconstructMethod = null;
+		if (tupleType == null)
+		{
+			deconstructMethod = expressionType.FindDeconstructMethod(arity);
+			if (deconstructMethod == null)
+			{
+				deconstructMethod = scope.FindDeconstructExtensionMethod(expressionType, arity, scope);
+				extensionOffset = 1;
+			}
+		}
+		var constructedMethod = deconstructMethod as ConstructedMethodDefinition;
+		
+		for (var i = 0; i < arity; ++i)
+		{
+			var targetNode = listNode.NodeAt(i*2 + 1);
+			var elementType = tupleType != null && i < tupleTypeArity
+				? tupleType.TypeOfElement(i)
+				: deconstructMethod != null && i < deconstructMethod.NumParameters
+				? deconstructMethod.parameters[i + extensionOffset].TypeOf() as TypeDefinitionBase
+				: unknownType;
+			if (constructedMethod != null)
+				elementType = elementType.SubstituteTypeParameters(constructedMethod);
+			elementType = elementType.SubstituteTypeParameters(expressionType);
+			var targetNodeChild0 = targetNode != null ? targetNode.NodeAt(0) : null;
+			if (targetNode == null || targetNodeChild0 == null)
+			{
+				elementTypes.Add(new SymbolReference(elementType));
+			}
+			else
+			{
+				switch (targetNodeChild0.RuleName)
+				{
+				case "DISCARD":
+					elementTypes.Add(new SymbolReference(elementType));
+					var discardLeaf = targetNodeChild0.LeafAt(0);
+					discardLeaf.resolvedSymbol = elementType.GetDiscardVariable();
+					discardLeaf.semanticError = null;
+					break;
+				case "implicitDeconstructVariableDeclarator":
+					elementTypes.Add(new SymbolReference(elementType));
+					break;
+				case "explicitDeconstructVariableDeclaration":
+					if (elementType != null)
+					{
+						var node0 = targetNodeChild0.NodeAt(0);
+						if (node0 != null)
+						{
+							var node0Child = node0.NodeAt(0);
+							if (node0Child.RuleName == "VAR")
+							{
+								node0Child.LeafAt(0).resolvedSymbol = elementType;
+							}
+							else
+							{
+								var explicitType = ResolveNode(node0, scope, null, 0, true) as TypeDefinitionBase;
+								if (explicitType != null)
+								{
+									var canConvert = elementType.CanConvertTo(explicitType);
+									if (!canConvert)
+									{
+										node0.GetFirstLeaf().semanticError = "Cannot implicitly convert " + elementType.GetName() + " to " + explicitType.GetName();
+									}
+									elementType = explicitType;
+								}
+							}
+						}
+						var node1 = targetNodeChild0.NodeAt(1);
+						if (node1 != null)
+						{
+							var node1Leaf = node1.GetFirstLeaf();
+							if (node1Leaf != null && node1Leaf.token.text == "_")
+							{
+								node1Leaf.semanticError = null;
+								node1Leaf.resolvedSymbol = elementType.GetDiscardVariable();
+							}
+						}					
+					}
+					elementTypes.Add(new SymbolReference(elementType));
+					//targetNodeChild0.resolvedSymbol = elementType;
+					break;
+				case "implicitDeconstructList":
+				case "explicitDeconstructList":
+					elementTypes.Add(new SymbolReference(ResolveDeconstructList(targetNodeChild0, elementType, scope)));
+					break;
+				}
+			}
+		}
+		
+		return TypeDefinitionBase.MakeTupleType(elementTypes);
+	}
+		
+	public struct TupleElementNestingInfo
+	{
+		public int index;
+		public int arity;
+	}
+
+	public static void CheckAssignment(ParseTree.Node assignmentNode, SymbolDefinition resolvedExpression)
+	{
+		if (resolvedExpression == null)
+			return;
+
+		var expressionNode = assignmentNode.NodeAt(2);
+		
+		var destinationLeaf = expressionNode.parent.ChildAt(0) as ParseTree.Leaf;
+		if (destinationLeaf == null)
+		{
+			//Debug.Log(expressionNode.parent.ChildAt(0));
+			return;
+		}
+		
+		var destination = destinationLeaf.resolvedSymbol;
+		if (destination == null)
+			return;
+
+		var destinationType = destination.TypeOf() as TypeDefinitionBase;
+		if (destinationType == null || destinationType.kind == SymbolKind.Error)
+			return;
+
+		if (resolvedExpression.kind != SymbolKind.MethodGroup)
+		{
+			var expressionType = resolvedExpression.TypeOf() as TypeDefinitionBase;
+			if (expressionType != null && !expressionType.CanConvertTo(destinationType))
+			{
+				var leaf = expressionNode.parent.LeafAt(1);
+				if (leaf != null)
+					leaf.semanticError = "Cannot convert type '" + expressionType.GetName() + "' to type '" + destinationType.GetName() + "'";
+			}
+			return;
+		}
+
+		if (destinationType.kind != SymbolKind.Delegate)
+		{
+			var leaf = expressionNode.parent.LeafAt(1);
+			if (leaf != null)
+				leaf.semanticError = "Cannot convert method group '" + resolvedExpression.name + "' to type '" + destinationType.GetName() + "'";
+			return;
+		}
+
+		var asMethodGroup = resolvedExpression as MethodGroupDefinition;
+		if (asMethodGroup == null)
+			return;
+
+		var methodGroupLeaf = expressionNode.GetFirstLeaf();
+		//var primaryExpressionNode = methodGroupLeaf.FindParentByName("primaryExpression");
+		//var lastPartNode = primaryExpressionNode.NodeAt(-1);
+						
+		var matchingMethod = asMethodGroup.FindMatchingMethod(destinationType);
+		if (matchingMethod == null)
+			return;
+
+		methodGroupLeaf.resolvedSymbol = matchingMethod;
+	}
+
+	public static SymbolDefinition ResolveNode(ParseTree.BaseNode baseNode, Scope scope = null, SymbolDefinition asMemberOf = null, int numTypeArguments = 0, bool asTypeOnly = false)
+#if MEASURE_RESOLVENODE_DEPTH
+	{
+		++resolveNodeDepth;
+		if (resolveNodeDepth > resolveNodeDepthMax)
+		{
+			resolveNodeDepth = 0;
+			throw new InvalidOperationException();
+		}
+		
+		var result = _ResolveNode(baseNode, scope, asMemberOf, numTypeArguments, asTypeOnly);
+		
+		--resolveNodeDepth;
+		return result;
+	}
+	
+	private static int resolveNodeDepth = 0;
+	private static int resolveNodeDepthMax = 100;
+	
+	private static SymbolDefinition _ResolveNode(ParseTree.BaseNode baseNode, Scope scope = null, SymbolDefinition asMemberOf = null, int numTypeArguments = 0, bool asTypeOnly = false)
+#endif
+	{
+	// A goto label to avoid recursion when possible:
+	reresolve:
+		
 		var node = baseNode as ParseTree.Node;
 
 		if (scope == null)
@@ -9517,11 +11499,16 @@ public class SymbolDefinition
 		if (leaf != null)
 		{
 			if ((leaf.resolvedSymbol == null || leaf.semanticError != null ||
-				leaf.resolvedSymbol.kind == SymbolKind.Method ||
+				//leaf.resolvedSymbol.kind == SymbolKind.Method ||
 				!leaf.resolvedSymbol.IsValid()) && leaf.token != null)
 			{
+				var prevResolvedSymbol = leaf.resolvedSymbol;
+
 				leaf.resolvedSymbol = null;
 				leaf.semanticError = null;
+				
+				if (!CsParser.isCSharp4 && leaf.token.tokenKind == SyntaxToken.Kind.ContextualKeyword && leaf.token.text == "_")
+					leaf.token.tokenKind = SyntaxToken.Kind.Identifier;
 
 				switch (leaf.token.tokenKind)
 				{
@@ -9570,8 +11557,7 @@ public class SymbolDefinition
 										leaf.semanticError = "Type expected!";
 									}
 								}
-#if NET_4_6
-								else if (leaf.token.text == "nameof" && leaf.parent != null)
+								else if (!CsParser.isCSharp4 && leaf.token.text == "nameof" && leaf.parent != null)
 								{
 									var nextNode = leaf.parent.nextSibling as ParseTree.Node;
 									if (nextNode != null)
@@ -9585,7 +11571,91 @@ public class SymbolDefinition
 										}
 									}
 								}
-#endif
+								else if (!CsParser.isCSharp4 && leaf.token.text == "_" && leaf.parent != null)
+								{
+									var peStartNode = leaf.parent;
+									if (peStartNode.RuleName == "primaryExpressionStart" && peStartNode.parent != null)
+									{
+										var unaryExprNode = peStartNode.parent.parent;
+										if (unaryExprNode != null)
+										{
+											List<TupleElementNestingInfo> nesting = null;
+											var assignmentNode = unaryExprNode.parent;
+											int childIndex = unaryExprNode.childIndex;
+											while (assignmentNode != null && assignmentNode.RuleName != "assignment")
+											{
+												assignmentNode = assignmentNode.FirstNonTrivialParent(out childIndex);
+												if (assignmentNode == null || assignmentNode.RuleName != "tupleExpression")
+													break;
+												if (nesting == null)
+													nesting = new List<TupleElementNestingInfo>(8);
+												nesting.Add(new TupleElementNestingInfo
+												{
+													index = childIndex / 2,
+													arity = assignmentNode.numValidNodes / 2
+												});
+											}
+											if (assignmentNode != null && assignmentNode.RuleName == "assignment" && (childIndex == 0 || nesting != null))
+											{
+												assignmentNode = assignmentNode.NodeAt(1);
+												var nextLeaf = assignmentNode == null ? null : assignmentNode.GetFirstLeaf();
+												if (nextLeaf != null && nextLeaf.token.text == "=")
+												{
+													leaf.token.tokenKind = SyntaxToken.Kind.ContextualKeyword;
+													var expressionNode = assignmentNode.nextSibling as ParseTree.Node;
+													if (expressionNode != null)
+													{
+														var resolvedExpression = ResolveNode(assignmentNode.nextSibling, scope, null, 0, false);
+														if (resolvedExpression != null)
+                                                        {
+															var type = resolvedExpression.TypeOf() as TypeDefinitionBase;
+															if (nesting != null)
+															{
+																for (var i = nesting.Count; type != null && i --> 0; )
+																{
+																	var tupleType = type as TupleTypeDefinition;
+																	if (tupleType != null)
+																	{
+																		type = tupleType.TypeOfElement(nesting[i].index);
+																		continue;
+																	}
+																
+																	var deconstructMethod = type.FindDeconstructMethod(nesting[i].arity);
+																	if (deconstructMethod == null)
+																	{
+																		deconstructMethod = scope.FindDeconstructExtensionMethod(type, nesting[i].arity, scope);
+																	}
+																	//TODO: Check is the Deconstruct() method accessibie...
+																	if (deconstructMethod == null)
+																		break;
+																
+																	var parameters = deconstructMethod.GetParameters();
+																	var paramIndex = nesting[i].index;
+																	if (parameters.Count >= 1 && parameters[0].IsThisParameter)
+																		++paramIndex;
+																	if (paramIndex >= parameters.Count)
+																		break;
+																	var paramType = parameters[paramIndex].TypeOf() as TypeDefinitionBase;
+																	if (paramType == null && type.kind == SymbolKind.Error)
+																		break;
+																	paramType = paramType.SubstituteTypeParameters(deconstructMethod);
+																	if (paramType == null && paramType.kind == SymbolKind.Error)
+																		break;
+																	type = paramType.SubstituteTypeParameters(type);
+																}
+															}
+															resolvedExpression = type != null ? type.GetThisInstance() : null;
+														}
+														leaf.resolvedSymbol = resolvedExpression;
+														var asThisReference = leaf.resolvedSymbol as ThisReference;
+														if (asThisReference != null)
+															leaf.resolvedSymbol = asThisReference.GetDiscardVariable();
+													}
+												}
+											}
+										}
+									}
+								}
 							}
 						}
 						if (leaf.resolvedSymbol == null)
@@ -9711,6 +11781,11 @@ public class SymbolDefinition
 						else
 						{
 							leaf.resolvedSymbol = IntegerLiteral.FromText(leaf.token.text);
+							if (leaf.resolvedSymbol == null)
+							{
+								leaf.resolvedSymbol = builtInTypes_int.GetThisInstance();
+								leaf.syntaxError = FGGrammar.IntegerConstantIsTooLargeErrorMessage.Instance;
+							}
 						}
 						break;
 
@@ -9725,6 +11800,14 @@ public class SymbolDefinition
 					case SyntaxToken.Kind.StringLiteral:
 					case SyntaxToken.Kind.VerbatimStringBegin:
 					case SyntaxToken.Kind.VerbatimStringLiteral:
+					case SyntaxToken.Kind.InterpolatedStringWholeLiteral:
+					case SyntaxToken.Kind.InterpolatedStringEndLiteral:
+						leaf.resolvedSymbol = builtInTypes_string.GetThisInstance();
+						break;
+						
+					case SyntaxToken.Kind.InterpolatedStringStartLiteral:
+					case SyntaxToken.Kind.InterpolatedStringMidLiteral:
+					case SyntaxToken.Kind.InterpolatedStringFormatLiteral:
 						leaf.resolvedSymbol = builtInTypes_string.GetThisInstance();
 						break;
 
@@ -9763,9 +11846,27 @@ public class SymbolDefinition
 //		Debug.Log("Resolving node: " + node);
 		switch (node.RuleName)
 		{
+			case "interpolatedStringLiteral":
+				{
+					var child = node.FirstChild;
+					while (child != null)
+					{
+						ResolveNode(child, scope);
+						child = child.nextSibling;
+					}
+				}
+				return builtInTypes_string.GetThisInstance();
+			
 			case "localVariableType":
 				if (node.numValidNodes == 1)
-					return ResolveNode(node.ChildAt(0), scope, asMemberOf);
+				{
+					baseNode = node.ChildAt(0);
+					//scope = scope;
+					//asMemberOf = asMemberOf;
+					numTypeArguments = 0;
+					asTypeOnly = false;
+					goto reresolve;
+				}
 				break;
 
 			case "GET":
@@ -9807,6 +11908,49 @@ public class SymbolDefinition
 					return unknownSymbol;
 				return declaration.definition;
 
+			case "DISCARD":
+				var discardLeaf = node.LeafAt(0);
+				discardLeaf.token.tokenKind = SyntaxToken.Kind.ContextualKeyword;
+				discardLeaf.resolvedSymbol = ((ThisReference)builtInTypes_void.GetThisInstance()).GetDiscardVariable();
+				discardLeaf.semanticError = null;
+				return nullLiteral;
+				
+			case "explicitDeconstructDeclaration":
+				if (node.resolvedSymbol != null && node.resolvedSymbol.kind != SymbolKind.Error)
+					return node.resolvedSymbol;				
+				if (node.numValidNodes == 3)
+				{
+					var expressionNode = node.NodeAt(2);
+					if (expressionNode != null)
+					{
+						var resolvedExpression = ResolveNode(expressionNode, scope, null, 0, false);
+						if (resolvedExpression != null && resolvedExpression.kind != SymbolKind.Error)
+						{
+							var expressionType = resolvedExpression.TypeOf() as TypeDefinitionBase;
+							node.resolvedSymbol = ResolveDeconstructList(node.NodeAt(0), expressionType, scope);
+						}
+					}
+				}
+				return node.resolvedSymbol;
+				
+			case "implicitDeconstructDeclaration":
+				if (node.resolvedSymbol != null && node.resolvedSymbol.kind != SymbolKind.Error)
+					return node.resolvedSymbol;				
+				if (node.numValidNodes == 4)
+				{
+					var expressionNode = node.NodeAt(3);
+					if (expressionNode != null)
+					{
+						var resolvedExpression = ResolveNode(expressionNode, scope, null, 0, false);
+						if (resolvedExpression != null && resolvedExpression.kind != SymbolKind.Error)
+						{
+							var expressionType = resolvedExpression.TypeOf() as TypeDefinitionBase;
+							node.resolvedSymbol = ResolveDeconstructList(node.NodeAt(1), expressionType, scope);
+						}
+					}
+				}
+				return node.resolvedSymbol;
+
 			case "VAR":
 				ParseTree.Node varDeclsNode = null;
 				if (node.parent.parent.RuleName == "foreachStatement" && node.parent.parent.numValidNodes >= 6)
@@ -9818,28 +11962,119 @@ public class SymbolDefinition
 						node.ChildAt(0).resolvedSymbol = elementType;
 					}
 				}
+				else if (node.parent.parent.RuleName == "caseVariableDeclaration")
+				{
+					varDeclsNode = node.FindParentByName("switchStatement");
+					varDeclsNode = varDeclsNode != null ? varDeclsNode.NodeAt(2) : null;
+					if (varDeclsNode != null && varDeclsNode.numValidNodes == 1)
+					{
+						var initExpr = ResolveNode(varDeclsNode);
+						var varLeaf = node.ChildAt(0);
+						varLeaf.semanticError = null;
+						if (initExpr != null && initExpr.kind != SymbolKind.Error)
+							varLeaf.resolvedSymbol = initExpr.TypeOf();
+						else
+							varLeaf.resolvedSymbol = unknownType;
+					}
+				}
+				else if (node.parent.parent.RuleName == "isVariableDeclaration")
+				{
+					var isVarDeclNode = node.parent.parent;
+					var varType = builtInTypes_bool;
+					if (isVarDeclNode.childIndex == 2)
+					{
+						var relExprNode = node.parent.parent.parent;
+						if (relExprNode != null)
+						{
+							var expression = ResolveNode(relExprNode.NodeAt(0), scope, null, 0, false);
+							if (expression != null)
+								varType = expression.TypeOf() as TypeDefinition ?? unknownType;
+						}
+					}
+
+					var varLeaf = node.parent.parent.GetFirstLeaf();
+					if (varLeaf != null)
+						varLeaf.resolvedSymbol = varType;
+				}
+				else if (node.parent.parent.RuleName == "outVariableDeclaration")
+				{
+					ParseTree.Leaf methodLeaf = FindMethodLeafFromArgument(node);
+					
+					var varLeaf = node.ChildAt(0);
+					if (varLeaf.resolvedSymbol == null && methodLeaf != null && methodLeaf.resolvedSymbol == null)
+					{
+						FGResolver.ResolveNode(methodLeaf.parent);
+					}
+					
+					if (methodLeaf == null || methodLeaf.resolvedSymbol == null && methodLeaf.semanticError != null)
+					{
+						varLeaf.resolvedSymbol = unknownType;
+					}
+					else if (varLeaf.resolvedSymbol != null)
+					{
+						varLeaf.resolvedSymbol = varLeaf.resolvedSymbol.SubstituteTypeParameters(methodLeaf.resolvedSymbol);
+					}
+				}
+				else if (node.parent.RuleName == "implicitDeconstructDeclaration")
+				{
+					var varNode = node.ChildAt(0);
+					varNode.resolvedSymbol = null;
+					
+					if (node.parent.resolvedSymbol == null)
+						ResolveNode(node.parent, scope, null, 0, false);
+					
+					varNode.resolvedSymbol = node.parent.resolvedSymbol;
+				}
+				else if (node.parent.parent.RuleName == "explicitDeconstructVariableDeclaration")
+				{
+					var varNode = node.ChildAt(0);
+					varNode.resolvedSymbol = null;
+					
+					var deconstructNode = node.parent.parent.parent.FindParentByName("explicitDeconstructDeclaration");
+					if (deconstructNode.resolvedSymbol == null)
+						ResolveNode(deconstructNode, scope, null, 0, false);
+					
+					var nextLeaf = varNode.FindNextLeaf();
+					if (nextLeaf != null && nextLeaf.resolvedSymbol != null)
+						varNode.resolvedSymbol = nextLeaf.resolvedSymbol.TypeOf();
+				}
 				else if (node.parent.parent.numValidNodes >= 2)
 				{
 					varDeclsNode = node.parent.parent.NodeAt(1);
 					if (varDeclsNode != null && varDeclsNode.numValidNodes == 1)
 					{
 						var declNode = varDeclsNode.NodeAt(0);
-						if (declNode != null && declNode.numValidNodes == 3)
+						if (declNode != null && declNode.numValidNodes >= 3)
 						{
-							var initExpr = ResolveNode(declNode.ChildAt(2));
+							var initExpr = ResolveNode(declNode.ChildAt(-1));
 							var varLeaf = node.ChildAt(0);
 							varLeaf.semanticError = null;
 							if (initExpr != null && initExpr.kind != SymbolKind.Error)
-								varLeaf.resolvedSymbol = initExpr.TypeOf();
+							{
+								initExpr = initExpr.TypeOf() ?? initExpr;
+								if (initExpr is IntegerLiteralType)
+									initExpr = initExpr.TypeOf() ?? initExpr;
+								varLeaf.resolvedSymbol = initExpr;
+							}
 							else
+							{
 								varLeaf.resolvedSymbol = unknownType;
+
+								//initExpr = ResolveNode(declNode.ChildAt(-1));
+								//initExpr = null;
+							}
 						}
 						else
 							node.ChildAt(0).resolvedSymbol = unknownType;
 					}
 				}
 				else
+				{
+#if SI3_WARNINGS
+					Debug.Log(node.parent);
+#endif
 					node.ChildAt(0).resolvedSymbol = unknownType;
+				}
 				return node.ChildAt(0).resolvedSymbol;
 
 			case "type": case "type2":
@@ -9903,16 +12138,23 @@ public class SymbolDefinition
 			case "typeName":
 			case "exceptionClassType":
 				var resolvedType = ResolveNode(node.ChildAt(0), scope, asMemberOf, numTypeArguments, true);
-				if (resolvedType != null && resolvedType.kind != SymbolKind.Error && !(resolvedType is TypeDefinitionBase))
+				if (resolvedType != null && resolvedType.kind != SymbolKind.Error && resolvedType.kind != SymbolKind.Constructor && !(resolvedType is TypeDefinitionBase))
 					node.GetFirstLeaf().semanticError = "Type expected";
 				return resolvedType;
 			
 			case "globalNamespace":
-				return ResolveNode(node.ChildAt(0), scope, null, 0);
+				baseNode = node.ChildAt(0);
+				//scope = scope;
+				asMemberOf = null;
+				numTypeArguments = 0;
+				asTypeOnly = false;
+				goto reresolve;
 
 			case "nonArrayType":
 				var nonArrayTypeSymbol = ResolveNode(node.ChildAt(0), scope, asMemberOf, 0, true);
 				var nonArrayType = nonArrayTypeSymbol as TypeDefinitionBase;
+				if (nonArrayTypeSymbol != null && nonArrayTypeSymbol.kind == SymbolKind.Constructor)
+					return nonArrayTypeSymbol;
 				if (nonArrayType != null && node.numValidNodes == 2)
 					return nonArrayType.MakeNullableType();
 				return nonArrayType;
@@ -9926,6 +12168,122 @@ public class SymbolDefinition
 			case "typeVariableName":
 				//asMemberOf = ((SymbolDeclarationScope) scope).declaration.definition;
 				return ResolveNode(node.ChildAt(0), scope) as TypeParameterDefinition;
+			
+			case "tupleType":
+				var typeRefs = new List<SymbolReference>(node.numValidNodes / 2);
+				for (var i = 1; i < node.numValidNodes; i += 2)
+				{
+					var tupleElementNode = node.NodeAt(i);
+					if (tupleElementNode != null)
+					{
+						tupleElementNode = tupleElementNode.NodeAt(0);
+					}
+					
+					if (tupleElementNode == null)
+					{
+						typeRefs.Add(new SymbolReference(unknownType));
+					}
+					else
+					{
+						typeRefs.Add(new SymbolReference(tupleElementNode));
+					}
+				}
+				var tupleType = TypeDefinitionBase.MakeTupleType(typeRefs);
+				return tupleType;
+
+			case "outVariableDeclaration":
+				baseNode = node.ChildAt(0);
+				//scope = scope;
+				asMemberOf = null;
+				numTypeArguments = 0;
+				asTypeOnly = true;
+				goto reresolve;
+
+			case "tupleExpressionElement":
+				baseNode = node.ChildAt(0);
+				//scope = scope;
+				asMemberOf = null;
+				numTypeArguments = 0;
+				asTypeOnly = false;
+				goto reresolve;
+
+			case "tupleExpression":
+				typeRefs = new List<SymbolReference>(node.numValidNodes / 2);
+				for (var i = 1; i < node.numValidNodes; i += 2)
+				{
+					var tupleElementNode = node.NodeAt(i);
+					if (tupleElementNode != null)
+					{
+						tupleElementNode = tupleElementNode.NodeAt(-1);
+					}
+					
+					if (tupleElementNode == null)
+					{
+						typeRefs.Add(new SymbolReference(unknownType));
+					}
+					else
+					{
+						var element = ResolveNode(tupleElementNode, scope, null, 0, false);
+						typeRefs.Add(new SymbolReference(element == null ? unknownType : element.TypeOf()));
+					}
+				}
+				tupleType = TypeDefinitionBase.MakeTupleType(typeRefs);
+				for (var i = 1; i < node.numValidNodes; i += 2)
+				{
+					var tupleElementNode = node.NodeAt(i);
+					if (tupleElementNode == null)
+						continue;
+					if (tupleElementNode.numValidNodes > 1)
+					{
+						var nameLeaf = tupleElementNode.GetFirstLeaf();
+						if (nameLeaf != null)
+						{
+							var tupleField = tupleType.SetElementAliasName(i / 2, nameLeaf.token.text);
+							if (tupleField != null)
+								nameLeaf.SetDeclaredSymbol(tupleField);
+						}
+					}
+					else
+					{
+						// Inferred tuple field names, a.k.a. tuple projection initializers
+						
+						var nameLeaf = tupleElementNode.GetLastLeaf();
+						if (nameLeaf != null && nameLeaf.token.tokenKind == SyntaxToken.Kind.Identifier)
+						{
+							var firstLeaf = tupleElementNode.GetFirstLeaf();
+							if (firstLeaf != nameLeaf)
+							{
+								var primaryExpressionPartNode = nameLeaf.FindParentByName("primaryExpressionPart");
+								if (primaryExpressionPartNode == null)
+								{
+									nameLeaf = null;
+								}
+								else
+								{
+									var primaryExpressionNode = firstLeaf.FindParentByName("primaryExpression");
+									if (primaryExpressionNode != primaryExpressionPartNode.parent)
+									{
+										nameLeaf = null;
+									}
+									else
+									{
+										var nonTrivialParent = primaryExpressionNode.FirstNonTrivialParent();
+										if (nonTrivialParent != tupleElementNode.parent)
+										{
+											//Debug.Log(nonTrivialParent);
+											//Debug.Log(tupleElementNode.parent);
+											nameLeaf = null;
+										}
+									}
+								}
+							}
+							
+							if (nameLeaf != null)
+								tupleType.SetElementAliasName(i / 2, nameLeaf.token.text);
+						}
+					}
+				}
+				return tupleType.GetThisInstance();
 
 			case "typeOrGeneric":
 				if (asMemberOf == null && node.childIndex > 0)
@@ -9972,7 +12330,12 @@ public class SymbolDefinition
 					}
 					return lastLeaf.resolvedSymbol;
 				}
-				return ResolveNode(node.ChildAt(0), scope, asMemberOf, 0, true);
+				baseNode = node.ChildAt(0);
+				//scope = scope;
+				//asMemberOf = asMemberOf;
+				numTypeArguments = 0;
+				asTypeOnly = true;
+				goto reresolve;
 
 			case "namespaceName":
 				var resolvedSymbol = ResolveNode(node.ChildAt(0), scope, asMemberOf, 0, true);
@@ -9987,7 +12350,12 @@ public class SymbolDefinition
 				return part;
 
 			case "usingAliasDirective":
-				return ResolveNode(node.ChildAt(0), scope);
+				baseNode = node.ChildAt(0);
+				//scope = scope;
+				asMemberOf = null;
+				numTypeArguments = 0;
+				asTypeOnly = false;
+				goto reresolve;
 
 			case "qualifiedIdentifier":
 				part = ResolveNode(node.ChildAt(0), scope) as NamespaceDefinition;
@@ -10011,6 +12379,7 @@ public class SymbolDefinition
 
 			case "primaryExpression":
 				var invokeTarget = part;
+				var returnNullable = false;
 				ParseTree.Leaf invokeTargetLeaf = null;
 				for (var i = 0; i < node.numValidNodes; ++i)
 				{
@@ -10031,16 +12400,37 @@ public class SymbolDefinition
 							if (nonArrayTypeNode != null)
 							{
 								asMemberOf = ResolveNode(nonArrayTypeNode, scope);
+								if (asMemberOf == null)
+								{
+									asMemberOf = ResolveNode(nonArrayTypeNode, scope);
+									asMemberOf = null;
+								}
 								var node3 = node.NodeAt(2);
 								if (node3 != null && node3.RuleName == "objectCreationExpression")
 								{
 									i += 2;
-									nextPart = ResolveNodeAsConstructor(node3, scope, asMemberOf);
+									nextPart = asMemberOf != null && asMemberOf.kind == SymbolKind.Constructor ? asMemberOf : ResolveNodeAsConstructor(node3, scope, asMemberOf);
 									if (nextPart != null && nextPart.kind == SymbolKind.Constructor)
 									{
 										var asMemberOfAsConstructedType = asMemberOf as ConstructedTypeDefinition;
 										if (asMemberOfAsConstructedType != null)
 											nextPart = asMemberOfAsConstructedType.GetConstructedMember(nextPart);
+
+										ParseTree.Leaf constructorLeaf = null;
+										var typeNameNode = nonArrayTypeNode.NodeAt(0);
+										if (typeNameNode != null && typeNameNode.RuleName == "typeName")
+										{
+											var lastTypeOrGenericNode = typeNameNode.NodeAt(0).NodeAt(-1);
+											if (lastTypeOrGenericNode != null && lastTypeOrGenericNode.RuleName == "typeOrGeneric")
+												constructorLeaf = lastTypeOrGenericNode.LeafAt(0);
+										}
+										else
+										{
+											constructorLeaf = nonArrayTypeNode.GetFirstLeaf();
+										}
+
+										if (constructorLeaf != null)
+											constructorLeaf.resolvedSymbol = nextPart;
 									}
 								}
 								else if (node3 != null) // && node3.RuleName == "arrayCreationExpression")
@@ -10061,10 +12451,10 @@ public class SymbolDefinition
 						// child is primaryExpressionStart, primaryExpressionPart, or anonymousMethodExpression
 						
 						var primaryExpressionPartNode = i != 0 ? child as ParseTree.Node : null;
-						var argumentsNode = primaryExpressionPartNode != null ? primaryExpressionPartNode.NodeAt(0) : null;
+						var argumentsNode = primaryExpressionPartNode != null ? primaryExpressionPartNode.NodeAt(-1) : null;
 						if (argumentsNode != null && argumentsNode.RuleName == "arguments")
 						{
-							nextPart = ResolveArgumentsNode(argumentsNode, scope, invokeTargetLeaf, part, asMemberOf);
+							nextPart = ResolveArgumentsNode(argumentsNode, scope, invokeTargetLeaf, part, asMemberOf ?? part.parentSymbol);
 							
 							var parameters = nextPart != null ? nextPart.GetParameters() : null;
 							if (parameters != null)
@@ -10133,7 +12523,7 @@ public class SymbolDefinition
 								}
 								else if (methodNameNode.RuleName == "primaryExpressionPart")
 								{
-									var accessIdentifierNode = methodNameNode.NodeAt(0);
+									var accessIdentifierNode = methodNameNode.NodeAt(-1);
 									if (accessIdentifierNode != null && accessIdentifierNode.RuleName == "accessIdentifier")
 									{
 										var methodNameLeaf = accessIdentifierNode.LeafAt(1);
@@ -10179,6 +12569,10 @@ public class SymbolDefinition
 							case SymbolKind.Event:
 							case SymbolKind.LocalConstant:
 							case SymbolKind.Variable:
+							case SymbolKind.TupleDeconstructVariable:
+							case SymbolKind.OutVariable:
+							case SymbolKind.IsVariable:
+							case SymbolKind.CaseVariable:
 							case SymbolKind.ForEachVariable:
 							case SymbolKind.FromClauseVariable:
 							case SymbolKind.Parameter:
@@ -10205,9 +12599,20 @@ public class SymbolDefinition
 					{
 						var currentNode = child as ParseTree.Node;
 						if (currentNode != null)
-							currentNode = currentNode.RuleName == "primaryExpressionPart" ? currentNode.NodeAt(0) : null;
+							currentNode = currentNode.RuleName == "primaryExpressionPart" ? currentNode.NodeAt(-1) : null;
 						if (currentNode == null || currentNode.RuleName != "arguments")
-							part = part.parentSymbol;
+						{
+							var constructedSymbolRef = part as ConstructedSymbolReference;
+							if (constructedSymbolRef != null && constructedSymbolRef.kind == SymbolKind.Method)
+							{
+								var constructedType = constructedSymbolRef.parentSymbol as ConstructedTypeDefinition;
+								part = constructedType.GetConstructedMember(part.GetGenericSymbol().parentSymbol);
+							}
+							else
+							{
+								part = part.parentSymbol;
+							}
+						}
 					}
 
 					if (part == null)
@@ -10221,7 +12626,8 @@ public class SymbolDefinition
 					}
 					else if (part.kind == SymbolKind.Constructor)
 					{
-						part = ((TypeDefinitionBase) part.parentSymbol).GetThisInstance();
+						var type = part.parentSymbol as TypeDefinition ?? part.parentSymbol.parentSymbol as TypeDefinition;
+						part = type.GetThisInstance();
 					}
 					
 					if (part == null)// || part.kind == SymbolKind.Error)
@@ -10237,10 +12643,23 @@ public class SymbolDefinition
 					{
 						if (partNode.RuleName == "primaryExpressionPart")
 						{
-							var accessIdentifierNode = partNode.NodeAt(0);
+							var accessIdentifierNode = partNode.NodeAt(-1);
 							if (accessIdentifierNode != null && accessIdentifierNode.RuleName == "accessIdentifier")
 							{
 								invokeTargetLeaf = accessIdentifierNode.LeafAt(1);
+								
+								if (accessIdentifierNode.childIndex == 1)
+								{
+									returnNullable = true;
+									
+									var prevPartType = asMemberOf.TypeOf() as TypeDefinitionBase;
+									if (prevPartType != null && (prevPartType.kind == SymbolKind.Struct && prevPartType.GetGenericSymbol() != builtInTypes_Nullable || prevPartType.kind == SymbolKind.Enum))
+									{
+										var accessLeaf = partNode.LeafAt(0);
+										accessLeaf.semanticError = "Operator '?.' cannot be applied to operand of a value type";
+										return unknownType;
+									}
+								}
 							}
 							else
 							{
@@ -10255,24 +12674,70 @@ public class SymbolDefinition
 						}
 					}
 				}
+				if (part == null)
+					break;
+				if (returnNullable)
+				{
+					var partType = part.TypeOf() as TypeDefinitionBase;
+					if (partType != null && (partType.kind == SymbolKind.Struct || partType.kind == SymbolKind.Enum))
+						part = partType.MakeNullableType().GetThisInstance();
+				}
+				if (part == null)
+					break;
+
+				//int childIndex;
+				//var firstNonTrivialParent = node.FirstNonTrivialParent(out childIndex);
+				//while (firstNonTrivialParent != null && childIndex > 0 && firstNonTrivialParent.RuleName == "conditionalExpression")
+				//	firstNonTrivialParent = firstNonTrivialParent.FirstNonTrivialParent(out childIndex);
+				//if (firstNonTrivialParent != null && childIndex == 2)
+				//{
+				//	if (firstNonTrivialParent.RuleName == "assignment" || firstNonTrivialParent.RuleName == "localVariableDeclarator")
+				//	{
+				//		CheckAssignment(firstNonTrivialParent, part);
+				//	}
+				//}
+				
 				return part ?? unknownSymbol;
 
 			case "primaryExpressionStart":
 				if (node.numValidNodes == 1)
-					return ResolveNode(node.ChildAt(0), scope, null);
+				{
+					baseNode = node.ChildAt(0);
+					//scope = scope;
+					asMemberOf = null;
+					numTypeArguments = 0;
+					asTypeOnly = false;
+					goto reresolve;
+				}
 				if (node.numValidNodes == 2)
 				{
 					var typeArgsNode = node.NodeAt(1);
 					if (typeArgsNode != null && typeArgsNode.RuleName == "typeArgumentList")
 						numTypeArguments = typeArgsNode.numValidNodes / 2;
 					asMemberOf = ResolveNode(node.ChildAt(0), scope, null, numTypeArguments);
-					return ResolveNode(typeArgsNode, scope, asMemberOf);
+					if (asMemberOf is TypeDefinitionBase)
+					{
+						baseNode = typeArgsNode;
+						//scope = scope;
+						//asMemberOf = asMemberOf;
+						numTypeArguments = 0;
+						asTypeOnly = false;
+						goto reresolve;
+					}
+					else
+						return asMemberOf;
 					//return ResolveNode(node.ChildAt(0), scope, null, numTypeArguments);
 				}
 				if (node.numValidNodes == 3)
 				{
 					part = ResolveNode(node.ChildAt(0), scope, null);
-					return ResolveNode(node.ChildAt(2), scope, part);
+					
+					baseNode = node.ChildAt(2);
+					//scope = scope;
+					asMemberOf = part;
+					numTypeArguments = 0;
+					asTypeOnly = false;
+					goto reresolve;
 				}
 				break;
 
@@ -10284,12 +12749,24 @@ public class SymbolDefinition
 						asMemberOf = asMemberOf.TypeOf();
 				}
 				if (asMemberOf != null)
-					return ResolveNode(node.ChildAt(0), scope, asMemberOf);
+				{
+					baseNode = node.ChildAt(-1);
+					//scope = scope;
+					//asMemberOf = asMemberOf;
+					numTypeArguments = 0;
+					asTypeOnly = false;
+					goto reresolve;
+				}
 				break;
 
 			case "brackets":
 				if (asMemberOf == null)
-					asMemberOf = ResolveNode(node.FindPreviousNode(), scope);
+				{
+					var prevNode = node.FindPreviousNode();
+					if (prevNode != null && prevNode.IsLit("?"))
+						prevNode = prevNode.FindPreviousNode();
+					asMemberOf = ResolveNode(prevNode, scope);
+				}
 				if (asMemberOf != null)
 				{
 				//	Debug.LogWarning("Resolving brackets on " + asMemberOf.GetTooltipText());
@@ -10339,7 +12816,14 @@ public class SymbolDefinition
 				{
 					var node1 = node.ChildAt(1);
 					if (!node1.missing)
-						return ResolveNode(node.ChildAt(1), scope, asMemberOf);
+					{
+						baseNode = node.ChildAt(1);
+						//scope = scope;
+						//asMemberOf = asMemberOf;
+						numTypeArguments = 0;
+						asTypeOnly = false;
+						goto reresolve;
+					}
 				}
 				else if (node.numValidNodes == 3)
 				{
@@ -10347,7 +12831,13 @@ public class SymbolDefinition
 					if (typeArgsNode != null && typeArgsNode.RuleName == "typeArgumentList")
 						numTypeArguments = typeArgsNode.numValidNodes / 2;
 					asMemberOf = ResolveNode(node.ChildAt(1), scope, asMemberOf, numTypeArguments);
-					return ResolveNode(typeArgsNode, scope, asMemberOf);
+					
+					baseNode = typeArgsNode;
+					//scope = scope;
+					//asMemberOf = asMemberOf;
+					numTypeArguments = 0;
+					asTypeOnly = false;
+					goto reresolve;
 				}
 				return asMemberOf;
 
@@ -10418,19 +12908,49 @@ public class SymbolDefinition
 						return null;
 					}
 				}
-//				if (node.numValidNodes < 2)
-//					return null;
 
 				var argumentListNode = node.numValidNodes >= 2 ? node.NodeAt(1) : null;
 				if (argumentListNode != null)
 					ResolveNode(argumentListNode, scope);
 				
-				if (node.parent.RuleName == "attribute" || node.parent.RuleName == "constructorInitializer")
+				if (node.parent.RuleName == "attribute")
 					return unknownSymbol;
 
-				var nodeLeftOfArguments = node.FindPreviousNode() as ParseTree.Node;
-				var idLeaf = nodeLeftOfArguments.LeafAt(0) ?? nodeLeftOfArguments.NodeAt(0).LeafAt(1);
-			
+				var baseNodeLeft = node.FindPreviousNode();
+				var nodeLeftOfArguments = baseNodeLeft as ParseTree.Node;
+				var idLeaf = baseNodeLeft as ParseTree.Leaf;
+				if (nodeLeftOfArguments != null)
+				{
+					baseNodeLeft = nodeLeftOfArguments.FirstChild;
+					idLeaf = baseNodeLeft as ParseTree.Leaf;
+					if (idLeaf == null && nodeLeftOfArguments.RuleName == "nonArrayType")
+					{
+						nodeLeftOfArguments = baseNodeLeft as ParseTree.Node;
+						if (nodeLeftOfArguments != null)
+						{
+							nodeLeftOfArguments = nodeLeftOfArguments.NodeAt(-1);
+							if (nodeLeftOfArguments != null)
+								idLeaf = nodeLeftOfArguments.GetFirstLeaf();
+						}
+					}
+					else if (idLeaf == null)
+					{
+						nodeLeftOfArguments = baseNodeLeft as ParseTree.Node;
+						if (nodeLeftOfArguments != null)
+							idLeaf = nodeLeftOfArguments.LeafAt(1);
+					}
+				}
+				
+#if SI3_WARNINGS
+				if (idLeaf == null)
+				{
+					Debug.Log(node.FindPreviousNode());
+				}
+#endif
+
+				var asMemberOfSymbolReference = asMemberOf as ConstructedSymbolReference;
+				if (asMemberOfSymbolReference != null)
+					asMemberOf = asMemberOfSymbolReference.referencedSymbol;
 				var methodGroup = asMemberOf as MethodGroupDefinition;
 				if (methodGroup != null)
 				{
@@ -10442,8 +12962,18 @@ public class SymbolDefinition
 					{
 						if (method.kind == SymbolKind.Error)
 						{
-							idLeaf.resolvedSymbol = methodGroup;
-							idLeaf.semanticError = method.name;
+							var type = methodGroup.parentSymbol as TypeDefinitionBase;
+							if (type != null && type.kind == SymbolKind.Struct && (argumentListNode == null || argumentListNode.numValidNodes == 0))
+							{
+								method = type.GetDefaultConstructor();
+								idLeaf.resolvedSymbol = method;
+								idLeaf.semanticError = null;
+							}
+							else
+							{
+								idLeaf.resolvedSymbol = methodGroup;
+								idLeaf.semanticError = method.name;
+							}
 						}
 						else if (idLeaf.resolvedSymbol != method)
 						{
@@ -10476,7 +13006,7 @@ public class SymbolDefinition
 						return method;
 					}
 				}
-				else if (asMemberOf.kind != SymbolKind.Method && asMemberOf.kind != SymbolKind.Error)
+				else if (asMemberOf.kind != SymbolKind.Method && asMemberOf.kind != SymbolKind.Constructor && asMemberOf.kind != SymbolKind.Error)
 				{
 					var typeOf = asMemberOf.TypeOf() as TypeDefinitionBase;
 					if (typeOf == null || typeOf.kind == SymbolKind.Error)
@@ -10499,13 +13029,25 @@ public class SymbolDefinition
 				if (node.numValidNodes >= 1)
 				{
 					if (node.numValidNodes == 1)
-						return ResolveNode(node.ChildAt(0), scope);
+					{
+						baseNode = node.ChildAt(0);
+						//scope = scope;
+						asMemberOf = null;
+						numTypeArguments = 0;
+						asTypeOnly = false;
+						goto reresolve;
+					}
 					else
 						ResolveNode(node.ChildAt(0), scope);
 				}
 				if (node.numValidNodes == 3)
 				{
-					return ResolveNode(node.ChildAt(2), scope);
+					baseNode = node.ChildAt(2);
+					//scope = scope;
+					asMemberOf = null;
+					numTypeArguments = 0;
+					asTypeOnly = false;
+					goto reresolve;
 				}
 				return resolvedChildren;
 
@@ -10513,13 +13055,25 @@ public class SymbolDefinition
 				if (node.numValidNodes >= 1)
 				{
 					if (node.numValidNodes == 1)
-						return ResolveNode(node.ChildAt(0), scope);
+					{
+						baseNode = node.ChildAt(0);
+						//scope = scope;
+						asMemberOf = null;
+						numTypeArguments = 0;
+						asTypeOnly = false;
+						goto reresolve;
+					}
 					else
 						ResolveNode(node.ChildAt(0), scope, asMemberOf);
 				}
 				if (node.numValidNodes == 3)
 				{
-					return ResolveNode(node.ChildAt(2), scope);
+					baseNode = node.ChildAt(2);
+					//scope = scope;
+					asMemberOf = null;
+					numTypeArguments = 0;
+					asTypeOnly = false;
+					goto reresolve;
 				}
 				return resolvedChildren;
 			
@@ -10534,7 +13088,12 @@ public class SymbolDefinition
 				return resolvedChildren;
 
 			case "argumentValue":
-				return ResolveNode(node.ChildAt(-1), scope);
+				baseNode = node.ChildAt(-1);
+				//scope = scope;
+				asMemberOf = null;
+				numTypeArguments = 0;
+				asTypeOnly = false;
+				goto reresolve;
 
 			case "argumentName":
 				//return ResolveNode(node.ChildAt(0), asMemberOf: asMemberOf);
@@ -10545,20 +13104,29 @@ public class SymbolDefinition
 				if (parameterNameLeaf == null)
 					return unknownSymbol;
 				var arguments = node.parent.parent.parent;
-				var invokedNode = arguments.FindPreviousNode();
-				var invokedSymbol = FGResolver.GetResolvedSymbol(invokedNode);
+				var invokedNode = arguments.FindPreviousNode() as ParseTree.Leaf;
+				if (invokedNode == null)
+					return unknownSymbol;
+				var invokedSymbol = invokedNode.resolvedSymbol;
 				methodGroup = invokedSymbol as MethodGroupDefinition;
 				if (methodGroup != null)
-					return methodGroup.ResolveParameterName(parameterNameLeaf);
+					return parameterNameLeaf.resolvedSymbol = methodGroup.ResolveParameterName(parameterNameLeaf);
 				var invokableSymbol = invokedSymbol as InvokeableSymbolDefinition;
 				if (invokableSymbol != null)
-					return invokableSymbol.ResolveParameterName(parameterNameLeaf);
+					return parameterNameLeaf.resolvedSymbol = invokableSymbol.ResolveParameterName(parameterNameLeaf);
 				return parameterNameLeaf.resolvedSymbol = unknownSymbol;
 			
 			case "attributeMemberName":
 				var asType = asMemberOf as TypeDefinitionBase;
 				if (asType != null)
-					return ResolveNode(node.ChildAt(0), scope, asType.GetThisInstance());
+				{
+					baseNode = node.ChildAt(0);
+					//scope = scope;
+					asMemberOf = asType.GetThisInstance();
+					numTypeArguments = 0;
+					asTypeOnly = false;
+					goto reresolve;
+				}
 				return unknownSymbol;
 
 			case "castExpression":
@@ -10591,33 +13159,112 @@ public class SymbolDefinition
 					ResolveNode(node.ChildAt(2), scope);
 				return builtInTypes_int.GetThisInstance();
 
-#if NET_4_6
 			case "nameofExpression":
 				if (node.numValidNodes >= 3)
 					ResolveNode(node.ChildAt(2), scope);
 				return builtInTypes_string.GetThisInstance();
-#endif
 
 			case "checkedExpression":
 			case "uncheckedExpression":
 				if (node.numValidNodes >= 3)
-					return ResolveNode(node.ChildAt(2), scope);
+				{
+					baseNode = node.ChildAt(2);
+					//scope = scope;
+					asMemberOf = null;
+					numTypeArguments = 0;
+					asTypeOnly = false;
+					goto reresolve;
+				}
 				return unknownSymbol;
 
+			case "localVariableDeclarator":
+				//Debug.Log("=> : " + node);
+				return null;
+
 			case "assignment":
+			{
+				var destination = ResolveNode(node.ChildAt(0), scope);
 				if (node.numValidNodes >= 3)
-					ResolveNode(node.ChildAt(2), scope);
-				return ResolveNode(node.ChildAt(0), scope);
+				{
+					var exprNode = node.ChildAt(2);
+					var resolvedExpression = ResolveNode(exprNode, scope);
+					
+					if (destination != null && resolvedExpression != null && resolvedExpression.kind == SymbolKind.MethodGroup)
+					{
+						var delegateType = destination.TypeOf() as TypeDefinitionBase;
+						var asMethodGroup = resolvedExpression as MethodGroupDefinition;
+						if (delegateType != null && delegateType.kind == SymbolKind.Delegate && asMethodGroup != null)
+						{
+							var methodGroupLeaf = exprNode.GetFirstLeaf();
+							//var primaryExpressionNode = methodGroupLeaf.FindParentByName("primaryExpression");
+							//var lastPartNode = primaryExpressionNode.NodeAt(-1);
+							
+							var matchingMethod = asMethodGroup.FindMatchingMethod(delegateType);
+							if (matchingMethod != null)
+							{
+								methodGroupLeaf.resolvedSymbol = matchingMethod;
+							}
+						}
+					}
+				}
+				return destination;
+			}
 			
+			case "expression":
+				if (node.parent.RuleName != "assignment")
+				{
+					baseNode = node.ChildAt(0);
+					//scope = scope;
+					asMemberOf = null;
+					numTypeArguments = 0;
+					asTypeOnly = false;
+					goto reresolve;
+				}
+				else
+				{
+					var result = ResolveNode(node.ChildAt(0), scope);
+					if (result != null && result.kind == SymbolKind.MethodGroup)
+					{
+						var destination = ResolveNode(node.parent.ChildAt(0), scope);
+						if (destination != null)
+						{
+							var delegateType = destination.TypeOf() as TypeDefinitionBase;
+							var asMethodGroup = result as MethodGroupDefinition;
+							if (delegateType != null && delegateType.kind == SymbolKind.Delegate && asMethodGroup != null)
+							{
+								var methodGroupLeaf = node.GetFirstLeaf();
+								//var primaryExpressionNode = methodGroupLeaf.FindParentByName("primaryExpression");
+								//var lastPartNode = primaryExpressionNode.NodeAt(-1);
+						
+								var matchingMethod = asMethodGroup.FindMatchingMethod(delegateType);
+								if (matchingMethod != null)
+								{
+									methodGroupLeaf.resolvedSymbol = matchingMethod;
+								}
+							}
+						}
+					}
+					return result;
+				}
+				
 			case "localVariableInitializer":
 			case "variableReference":
-			case "expression":
 			case "constantExpression":
 			case "nonAssignmentExpression":
-				return ResolveNode(node.ChildAt(0), scope);
+				baseNode = node.ChildAt(0);
+				//scope = scope;
+				asMemberOf = null;
+				numTypeArguments = 0;
+				asTypeOnly = false;
+				goto reresolve;
 
 			case "parenExpression":
-				return ResolveNode(node.ChildAt(1), scope);
+				baseNode = node.ChildAt(1);
+				//scope = scope;
+				asMemberOf = null;
+				numTypeArguments = 0;
+				asTypeOnly = false;
+				goto reresolve;
 
 			case "nullCoalescingExpression":
 				for (var i = 2; i < node.numValidNodes; i += 2)
@@ -10640,25 +13287,104 @@ public class SymbolDefinition
 				{
 					ResolveNode(node.ChildAt(0), scope);
 					var typeRight = nullLiteral;
-					if (node.numValidNodes == 5)
-						typeRight = ResolveNode(node.ChildAt(4), scope);
-					var typeLeft = ResolveNode(node.ChildAt(2), scope); // HACK
+					if (node.numValidNodes >= 5)
+						typeRight = ResolveNode(node.ChildAt(-1), scope);
+					var typeLeft = ResolveNode(node.FindChildByName("expression"), scope); // HACK
 					return typeLeft != nullLiteral ? typeLeft : typeRight;
 				}
 				else
-					return ResolveNode(node.ChildAt(0), scope, asMemberOf);
+				{
+					baseNode = node.ChildAt(0);
+					//scope = scope;
+					//asMemberOf = asMemberOf;
+					numTypeArguments = 0;
+					asTypeOnly = false;
+					goto reresolve;
+				}
 
 			case "unaryExpression":
 				if (node.numValidNodes == 1)
-					return ResolveNode(node.ChildAt(0), scope, null);
+				{
+					baseNode = node.ChildAt(0);
+					//scope = scope;
+					asMemberOf = null;
+					numTypeArguments = 0;
+					asTypeOnly = false;
+					goto reresolve;
+				}
 				if (node.ChildAt(0) is ParseTree.Node)
-					return ResolveNode(node.ChildAt(0), scope, null);
-				return ResolveNode(node.ChildAt(1), scope, null);
+				{
+					baseNode = node.ChildAt(0);
+					//scope = scope;
+					asMemberOf = null;
+					numTypeArguments = 0;
+					asTypeOnly = false;
+					goto reresolve;
+				}
+				baseNode = node.ChildAt(1);
+				//scope = scope;
+				asMemberOf = null;
+				numTypeArguments = 0;
+				asTypeOnly = false;
+				goto reresolve;
+			
+			case "awaitExpression":
+				if (node.numValidNodes < 2)
+					return unknownType;
+				var awaitOperand = ResolveNode(node.ChildAt(1), scope, null);
+				var typeOfAwaitOperand = awaitOperand.TypeOf() as TypeDefinition ?? unknownType;
+				if (typeOfAwaitOperand.kind == SymbolKind.Error)
+					return typeOfAwaitOperand;
+				
+				if (typeOfAwaitOperand == builtInTypes_Task)
+					return builtInTypes_void.GetThisInstance();
+				
+				var taskType = typeOfAwaitOperand.ConvertTo(builtInTypes_Task_1) as ConstructedTypeDefinition;
+				if (taskType != null)
+				{
+					var returnTypeReference = taskType.typeArguments == null ? null : taskType.typeArguments.FirstOrDefault();
+					if (returnTypeReference == null)
+						return null;
+					var returnType = returnTypeReference.definition as TypeDefinition;
+					return returnType == null ? null : returnType.GetThisInstance();
+				}
+				
+				var getAwaiterMethod = typeOfAwaitOperand.FindMethod("GetAwaiter", 0, 0, true);
+				if (getAwaiterMethod == null)
+				{
+					getAwaiterMethod = scope.ResolveAsExtensionMethod("GetAwaiter", typeOfAwaitOperand, null, null, scope, null) as MethodDefinition;
+				}
+				if (getAwaiterMethod == null)
+					return null;
+				
+				//TODO: Check is the GetAwaiter() method accessibie...
+				var awaiterType = getAwaiterMethod.ReturnType();
+				if (awaiterType == null || !awaiterType.DerivesFrom(builtInTypes_INotifyCompletion))
+					return null;
+				
+				var getResultMethod = awaiterType.FindMethod("GetResult", 0, 0, true);
+				if (getResultMethod == null)
+					return null;
+					
+				var getResultReturnType = getResultMethod.ReturnType();
+				getResultReturnType = getResultReturnType.SubstituteTypeParameters(getResultMethod);
+				getResultReturnType = getResultReturnType.SubstituteTypeParameters(awaiterType);
+				getResultReturnType = getResultReturnType.SubstituteTypeParameters(getAwaiterMethod);
+				getResultReturnType = getResultReturnType.SubstituteTypeParameters(typeOfAwaitOperand);
+				
+				return getResultReturnType.GetThisInstance();
 			
 			case "preIncrementExpression":
 			case "preDecrementExpression":
 				if (node.numValidNodes == 2)
-					return ResolveNode(node.ChildAt(1), scope, null);
+				{
+					baseNode = node.ChildAt(1);
+					//scope = scope;
+					asMemberOf = null;
+					numTypeArguments = 0;
+					asTypeOnly = false;
+					goto reresolve;
+				}
 				return builtInTypes_int.GetThisInstance();
 
 			case "inclusiveOrExpression":
@@ -10668,7 +13394,12 @@ public class SymbolDefinition
 			case "multiplicativeExpression":
 				for (var i = 2; i < node.numValidNodes; i += 2)
 					ResolveNode(node.ChildAt(i), scope);
-				return ResolveNode(node.ChildAt(0), scope); // HACK
+				baseNode = node.ChildAt(0);
+				//scope = scope;
+				asMemberOf = null;
+				numTypeArguments = 0;
+				asTypeOnly = false;
+				goto reresolve; // HACK
 
 			case "additiveExpression":
 				part = ResolveNode(node.ChildAt(0), scope);
@@ -10735,7 +13466,14 @@ public class SymbolDefinition
 			case "arrayInitializer":
 				if (node.numValidNodes >= 2)
 					if (!node.ChildAt(1).IsLit("}"))
-						return ResolveNode(node.ChildAt(1), scope);
+					{
+						baseNode = node.ChildAt(1);
+						//scope = scope;
+						asMemberOf = null;
+						numTypeArguments = 0;
+						asTypeOnly = false;
+						goto reresolve;
+					}
 				return unknownType;
 
 			case "variableInitializerList":
@@ -10760,7 +13498,12 @@ public class SymbolDefinition
 				return commonType;
 
 			case "variableInitializer":
-				return ResolveNode(node.ChildAt(0), scope);
+				baseNode = node.ChildAt(0);
+				//scope = scope;
+				asMemberOf = null;
+				numTypeArguments = 0;
+				asTypeOnly = false;
+				goto reresolve;
 
 			case "conditionalOrExpression":
 				if (node.numValidNodes == 1)
@@ -10839,11 +13582,20 @@ public class SymbolDefinition
 				return unknownSymbol;
 
 			case "lambdaExpressionBody":
-				var expressionNode = node.NodeAt(0);
-				if (expressionNode != null)
-					return ResolveNode(expressionNode);
-				//TODO: Resolve type from return statements!
-				return null;
+				{
+					var expressionNode = node.NodeAt(0);
+					if (expressionNode != null)
+					{
+						baseNode = expressionNode;
+						scope = null;
+						asMemberOf = null;
+						numTypeArguments = 0;
+						asTypeOnly = false;
+						goto reresolve;
+					}
+					//TODO: Resolve type from return statements!
+					return null;
+				}
 
 			case "objectCreationExpression":
 				var objectType = (ResolveNode(node.FindPreviousNode(), scope) ?? unknownType).TypeOf() as TypeDefinitionBase;
@@ -10887,19 +13639,44 @@ public class SymbolDefinition
 
 			case "qidStart":
 				if (node.numValidNodes == 1)
-					return ResolveNode(node.ChildAt(0), scope);
+				{
+					baseNode = node.ChildAt(0);
+					//scope = scope;
+					asMemberOf = null;
+					numTypeArguments = 0;
+					asTypeOnly = false;
+					goto reresolve;
+				}
 				if (node.numValidNodes == 2 && node.NodeAt(1) != null)
 				{
 					ResolveNode(node.ChildAt(1), scope);
-					return ResolveNode(node.ChildAt(0), scope, null, node.NodeAt(1).numValidNodes / 2, true);
+
+					baseNode = node.ChildAt(0);
+					//scope = scope;
+					asMemberOf = null;
+					numTypeArguments = node.NodeAt(1).numValidNodes / 2;
+					asTypeOnly = true;
+					goto reresolve;
 				}
 				asMemberOf = ResolveNode(node.ChildAt(0), scope);
 				if (asMemberOf != null && asMemberOf.kind != SymbolKind.Error && node.numValidNodes == 3)
-					return ResolveNode(node.ChildAt(2), scope, asMemberOf);
+				{
+					baseNode = node.ChildAt(2);
+					//scope = scope;
+					//asMemberOf = asMemberOf;
+					numTypeArguments = 0;
+					asTypeOnly = false;
+					goto reresolve;
+				}
 				return unknownSymbol;
 
 			case "qidPart":
-				return ResolveNode(node.ChildAt(0), scope, asMemberOf);
+				baseNode = node.ChildAt(0);
+				//scope = scope;
+				//asMemberOf = asMemberOf;
+				numTypeArguments = 0;
+				asTypeOnly = false;
+				goto reresolve;
 				
 			case "classMemberDeclaration":
 				return null;
@@ -11141,9 +13918,14 @@ public class SymbolDefinition
 			var assembly = this;
 			while (assembly != null)
 			{
-				var result = assembly as AssemblyDefinition;
-				if (result != null)
-					return result;
+				if (assembly.kind == SymbolKind.None)
+				{
+					var result = assembly as AssemblyDefinition;
+					if (result != null)
+					{
+						return result;
+					}
+				}
 				assembly = assembly.parentSymbol;
 			}
 			return null;
@@ -11194,6 +13976,13 @@ public class SymbolDefinition
 		get {
 			var typeParameters = GetTypeParameters();
 			return typeParameters != null ? typeParameters.Count : 0;
+		}
+	}
+
+	public int NumParameters {
+		get {
+			var parameters = GetParameters();
+			return parameters != null ? parameters.Count : 0;
 		}
 	}
 }
@@ -11290,6 +14079,11 @@ public class SymbolDeclaration //: IVisitableTreeNode<SymbolDeclaration, SymbolD
 	{
 		get { return (modifiers & Modifiers.Partial) != 0; }
 	}
+	
+	public bool IsAsync
+	{
+		get { return (modifiers & Modifiers.Async) != 0; }
+	}
 
 	public ParseTree.BaseNode NameNode()
 	{
@@ -11318,7 +14112,7 @@ public class SymbolDeclaration //: IVisitableTreeNode<SymbolDeclaration, SymbolD
 				break;
 
 			case "delegateDeclaration":
-				nameNode = parseTreeNode.ChildAt(2);
+				nameNode = parseTreeNode.FindChildByName("NAME");
 				break;
 
 			case "eventDeclarator":
@@ -11327,9 +14121,14 @@ public class SymbolDeclaration //: IVisitableTreeNode<SymbolDeclaration, SymbolD
 			case "interfacePropertyDeclaration":
 			case "variableDeclarator":
 			case "localVariableDeclarator":
+			case "outVariableDeclarator":
+			case "isVariableDeclarator":
+			case "caseVariableDeclarator":
 			case "constantDeclarator":
 			case "interfaceMethodDeclaration":
 			case "catchExceptionIdentifier":
+			case "implicitDeconstructVariableDeclarator":
+			case "explicitDeconstructVariableDeclarator":
 				nameNode = parseTreeNode.ChildAt(0);
 				break;
 
@@ -11395,6 +14194,7 @@ public class SymbolDeclaration //: IVisitableTreeNode<SymbolDeclaration, SymbolD
 			case "interfaceSetAccessorDeclaration":
 			case "addAccessorDeclaration":
 			case "removeAccessorDeclaration":
+			case "readonlyAccessorDeclaration":
 				nameNode = parseTreeNode.FindChildByName("IDENTIFIER");
 				break;
 
@@ -11446,6 +14246,7 @@ public class SymbolDeclaration //: IVisitableTreeNode<SymbolDeclaration, SymbolD
 				{
 					case "getAccessorDeclaration":
 					case "interfaceGetAccessorDeclaration":
+					case "readonlyAccessorDeclaration":
 						return "get";
 					case "setAccessorDeclaration":
 					case "interfaceSetAccessorDeclaration":
@@ -11607,9 +14408,11 @@ public class SymbolDeclaration //: IVisitableTreeNode<SymbolDeclaration, SymbolD
 
 	public override string ToString()
 	{
-		var sb = new StringBuilder();
+		var sb = StringBuilders.Alloc();
 		Dump(sb, string.Empty);
-		return sb.ToString();
+		var result = sb.ToString();
+		StringBuilders.Release(sb);
+		return result;
 	}
 
 	protected virtual void Dump(StringBuilder sb, string indent)
@@ -11634,6 +14437,7 @@ public class SymbolDeclaration //: IVisitableTreeNode<SymbolDeclaration, SymbolD
 public class NamespaceDeclaration : SymbolDeclaration
 {
 	public List<SymbolReference> importedNamespaces = new List<SymbolReference>();
+	public List<SymbolReference> importedStaticTypes = new List<SymbolReference>();
 	public List<TypeAlias> typeAliases = new List<TypeAlias>();
 
 	public NamespaceDeclaration(string nsName)
@@ -11659,6 +14463,10 @@ public class NamespaceDeclaration : SymbolDeclaration
 		sb.AppendLine("  Aliases:");
 		foreach (var ta in typeAliases)
 			sb.AppendLine(indent2 + ta.name);
+
+		sb.AppendLine("  Static imports:");
+		foreach (var ta in importedStaticTypes)
+			sb.AppendLine(indent2 + ta.definition.name);
 	}
 }
 
@@ -11747,7 +14555,7 @@ public class AssemblyDefinition : SymbolDefinition
 			foreach (var island in monoIslands)
 			{
 				var output = outputField.GetValue(island) as string;
-				if (!output.EndsWith(assemblyName, StringComparison.OrdinalIgnoreCase))
+				if (!output.EndsWith(assemblyName, StringComparison.InvariantCultureIgnoreCase))
 					continue;
 				
 				var references = referencesField.GetValue(island) as string[];
@@ -11806,14 +14614,24 @@ public class AssemblyDefinition : SymbolDefinition
 				
 				if (assembly != null)
 				{
+#if UNITY_2017_3_OR_NEWER
+					foreach (var ra in scriptAssembly.allReferences)
+					{
+						var assemblyDefinition = FromPath(ra);
+						if (assemblyDefinition != null)
+							raSet.Add(assemblyDefinition);
+					}
+#else
 					foreach (var ra in ReferencedAssemblyNames)
 					{
 						var assemblyDefinition = FromName(ra);
 						if (assemblyDefinition != null)
 							raSet.Add(assemblyDefinition);
 					}
+#endif
 				}
 				
+#if !UNITY_2017_3_OR_NEWER
 				var assemblyName = unityAssemblyNames[(int) assemblyId];
 				if (assemblyName == null && assembly != null)
 					assemblyName = AssemblyName;
@@ -11843,7 +14661,8 @@ public class AssemblyDefinition : SymbolDefinition
 				raSet.Add(AssemblyDefinition.FromName("System.Runtime.Serialization"));
 				raSet.Add(AssemblyDefinition.FromName("System.XML"));
 				raSet.Add(AssemblyDefinition.FromName("System.Xml.Linq"));
-				
+#endif
+
 				raSet.Remove(null);
 				
 				_referencedAssemblies = new AssemblyDefinition[raSet.Count];
@@ -11855,14 +14674,16 @@ public class AssemblyDefinition : SymbolDefinition
 
 	public Dictionary<string, CompilationUnitScope> compilationUnits;
 
-	private static readonly Dictionary<Assembly, AssemblyDefinition> allAssemblyDefinitions = new Dictionary<Assembly, AssemblyDefinition>();
+	private static readonly Dictionary<int, AssemblyDefinition> allAssemblyDefinitions = new Dictionary<int, AssemblyDefinition>(512);
 	public static AssemblyDefinition FromAssembly(Assembly assembly)
 	{
+		var name = assembly.GetName().Name.ToLower(System.Globalization.CultureInfo.InvariantCulture);
+		var key = SymbolDefinition.GetHashID(name);
 		AssemblyDefinition definition;
-		if (!allAssemblyDefinitions.TryGetValue(assembly, out definition))
+		if (!allAssemblyDefinitions.TryGetValue(key, out definition))
 		{
 			definition = new AssemblyDefinition(assembly);
-			allAssemblyDefinitions[assembly] = definition;
+			allAssemblyDefinitions[key] = definition;
 		}
 		return definition;
 	}
@@ -11979,9 +14800,9 @@ public class AssemblyDefinition : SymbolDefinition
 	public static bool IsIgnoredScript(string assetPath)
 	{
 		return
-			assetPath.StartsWith("assets/webplayertemplates/", StringComparison.OrdinalIgnoreCase) ||
-			assetPath.StartsWith("assets/webgltemplates/", StringComparison.OrdinalIgnoreCase) ||
-			assetPath.StartsWith("assets/streamingassets/", StringComparison.OrdinalIgnoreCase);
+			assetPath.StartsWithIgnoreCase("assets/webplayertemplates/") ||
+			assetPath.StartsWithIgnoreCase("assets/webgltemplates/") ||
+			assetPath.StartsWithIgnoreCase("assets/streamingassets/");
 	}
 	
 	private static UnityAssembly AssemblyIdFromAssetPath(string pathName)
@@ -12002,21 +14823,21 @@ public class AssemblyDefinition : SymbolDefinition
 		bool isUnity_5_2_1p4_orNewer = true;
 #if UNITY_4_0 || UNITY_4_1 || UNITY_4_2 || UNITY_4_3 || UNITY_4_5 || UNITY_4_6 || UNITY_4_7 || UNITY_5_0 || UNITY_5_1 || UNITY_5_2
 		isUnity_5_2_1p4_orNewer =
-			UnityEngine.Application.unityVersion.StartsWith("5.2.1p") &&
+		UnityEngine.Application.unityVersion.FastStartsWith("5.2.1p") &&
 			int.Parse(UnityEngine.Application.unityVersion.Substring("5.2.1p".Length)) >= 4;
 #endif
 		
-		var isPlugins = path.StartsWith("assets/plugins/", StringComparison.Ordinal);
-		var isStandardAssets = path.StartsWith("assets/standard assets/", StringComparison.Ordinal) ||
-			path.StartsWith("assets/pro standard assets/", StringComparison.Ordinal);
+		var isPlugins = path.FastStartsWith("assets/plugins/");
+		var isStandardAssets = path.FastStartsWith("assets/standard assets/") ||
+			path.FastStartsWith("assets/pro standard assets/");
 		var isFirstPass = isPlugins || isStandardAssets;
 		bool isEditor;
 		if (isFirstPass && !isUnity_5_2_1p4_orNewer)
 		{
 			isEditor =
-				isPlugins && path.StartsWith("assets/plugins/editor/", StringComparison.Ordinal) ||
-				isStandardAssets && path.StartsWith("assets/pro standard assets/editor/", StringComparison.Ordinal) ||
-				isStandardAssets && path.StartsWith("assets/standard assets/editor/", StringComparison.Ordinal);
+				isPlugins && path.FastStartsWith("assets/plugins/editor/") ||
+				isStandardAssets && path.FastStartsWith("assets/pro standard assets/editor/") ||
+				isStandardAssets && path.FastStartsWith("assets/standard assets/editor/");
 		}
 		else
 		{
@@ -12119,6 +14940,8 @@ public class AssemblyDefinition : SymbolDefinition
 		}
 		return result.ToArray();
 	}
+	
+	public int hashID;
 
 	private AssemblyDefinition(Assembly assembly)
 	{
@@ -12131,7 +14954,8 @@ public class AssemblyDefinition : SymbolDefinition
 		isScriptAssembly = scriptAssembly != null;
 #endif
 
-		switch (assembly.GetName().Name.ToLower())
+		name = assembly.GetName().Name.ToLower(System.Globalization.CultureInfo.InvariantCulture);
+		switch (name)
 		{
 			case "assembly-csharp-firstpass":
 				assemblyId = UnityAssembly.CSharpFirstPass;
@@ -12187,6 +15011,7 @@ public class AssemblyDefinition : SymbolDefinition
 				break;
 		}
 		
+		hashID = GetHashID();
 		if (this.isScriptAssembly)
 		{
 			fromCsScripts = true;
@@ -12295,36 +15120,6 @@ public class AssemblyDefinition : SymbolDefinition
 
 		_globalNamespace = new NamespaceDefinition { name = "", kind = SymbolKind.Namespace, parentSymbol = this };
 
-		if (builtInTypes == null)
-		{
-			builtInTypes = new Dictionary<string, TypeDefinitionBase>
-		    {
-			    { "int", builtInTypes_int = DefineBuiltInType(typeof(int)) },
-			    { "uint", builtInTypes_uint = DefineBuiltInType(typeof(uint)) },
-			    { "byte", builtInTypes_byte = DefineBuiltInType(typeof(byte)) },
-			    { "sbyte", builtInTypes_sbyte = DefineBuiltInType(typeof(sbyte)) },
-			    { "short", builtInTypes_short = DefineBuiltInType(typeof(short)) },
-			    { "ushort", builtInTypes_ushort = DefineBuiltInType(typeof(ushort)) },
-			    { "long", builtInTypes_long = DefineBuiltInType(typeof(long)) },
-			    { "ulong", builtInTypes_ulong = DefineBuiltInType(typeof(ulong)) },
-			    { "float", builtInTypes_float = DefineBuiltInType(typeof(float)) },
-			    { "double", builtInTypes_double = DefineBuiltInType(typeof(double)) },
-			    { "decimal", builtInTypes_decimal = DefineBuiltInType(typeof(decimal)) },
-			    { "char", builtInTypes_char = DefineBuiltInType(typeof(char)) },
-			    { "string", builtInTypes_string = DefineBuiltInType(typeof(string)) },
-			    { "bool", builtInTypes_bool = DefineBuiltInType(typeof(bool)) },
-			    { "object", builtInTypes_object = DefineBuiltInType(typeof(object)) },
-			    { "void", builtInTypes_void = DefineBuiltInType(typeof(void)) },
-		    };
-			
-			builtInTypes_Array = DefineBuiltInType(typeof(System.Array));
-			builtInTypes_Nullable = DefineBuiltInType(typeof(System.Nullable<>));
-			builtInTypes_IEnumerable = DefineBuiltInType(typeof(System.Collections.IEnumerable));
-			builtInTypes_IEnumerable_1 = DefineBuiltInType(typeof(System.Collections.Generic.IEnumerable<>));
-			builtInTypes_Exception = DefineBuiltInType(typeof(System.Exception));
-			builtInTypes_Enum = DefineBuiltInType(typeof(System.Enum));
-		}
-
 		if (assembly != null)
 		{
 			System.Type[] types = null;
@@ -12344,7 +15139,7 @@ public class AssemblyDefinition : SymbolDefinition
 				return _globalNamespace;
 			}
 				
-			var namespacaes = new Dictionary<string, NamespaceDefinition>();
+			var namespaces = new Dictionary<string, NamespaceDefinition>();
 				
 			foreach (var t in types)
 			{
@@ -12364,7 +15159,7 @@ public class AssemblyDefinition : SymbolDefinition
 				if (!string.IsNullOrEmpty(typeNamespace))
 				{
 					NamespaceDefinition nsd;
-					if (namespacaes.TryGetValue(typeNamespace, out nsd))
+					if (namespaces.TryGetValue(typeNamespace, out nsd))
 					{
 						current = nsd;
 					}
@@ -12393,12 +15188,65 @@ public class AssemblyDefinition : SymbolDefinition
 								current = nsd;
 							}
 						}
-						namespacaes[typeNamespace] = (NamespaceDefinition) current;
+						namespaces[typeNamespace] = (NamespaceDefinition) current;
 					}
 				}
 	
 				current.ImportReflectedType(t);
 			}
+		}
+
+		if (builtInTypes == null)
+		{
+			builtInTypes = new Dictionary<string, TypeDefinitionBase>(16);
+
+			builtInTypes.Add("int", builtInTypes_int = DefineBuiltInType(typeof(int)));
+			builtInTypes.Add("uint", builtInTypes_uint = DefineBuiltInType(typeof(uint)));
+			builtInTypes.Add("byte", builtInTypes_byte = DefineBuiltInType(typeof(byte)));
+			builtInTypes.Add("sbyte", builtInTypes_sbyte = DefineBuiltInType(typeof(sbyte)));
+			builtInTypes.Add("short", builtInTypes_short = DefineBuiltInType(typeof(short)));
+			builtInTypes.Add("ushort", builtInTypes_ushort = DefineBuiltInType(typeof(ushort)));
+			builtInTypes.Add("long", builtInTypes_long = DefineBuiltInType(typeof(long)));
+			builtInTypes.Add("ulong", builtInTypes_ulong = DefineBuiltInType(typeof(ulong)));
+			builtInTypes.Add("float", builtInTypes_float = DefineBuiltInType(typeof(float)));
+			builtInTypes.Add("double", builtInTypes_double = DefineBuiltInType(typeof(double)));
+			builtInTypes.Add("decimal", builtInTypes_decimal = DefineBuiltInType(typeof(decimal)));
+			builtInTypes.Add("char", builtInTypes_char = DefineBuiltInType(typeof(char)));
+			builtInTypes.Add("string", builtInTypes_string = DefineBuiltInType(typeof(string)));
+			builtInTypes.Add("bool", builtInTypes_bool = DefineBuiltInType(typeof(bool)));
+			builtInTypes.Add("object", builtInTypes_object = DefineBuiltInType(typeof(object)));
+			builtInTypes.Add("void", builtInTypes_void = DefineBuiltInType(typeof(void)));
+			
+			builtInTypes_Array = DefineBuiltInType(typeof(System.Array));
+			builtInTypes_Nullable = DefineBuiltInType(typeof(System.Nullable<>));
+			builtInTypes_IEnumerable = DefineBuiltInType(typeof(System.Collections.IEnumerable));
+			builtInTypes_IEnumerable_1 = DefineBuiltInType(typeof(System.Collections.Generic.IEnumerable<>));
+			builtInTypes_Exception = DefineBuiltInType(typeof(System.Exception));
+			builtInTypes_Enum = DefineBuiltInType(typeof(System.Enum));
+
+			var typeTask = Type.GetType("System.Threading.Tasks.Task,mscorlib");
+			builtInTypes_Task = DefineBuiltInType(typeTask);
+			var typeTask1 = Type.GetType("System.Threading.Tasks.Task`1,mscorlib");
+			builtInTypes_Task_1 = DefineBuiltInType(typeTask1);
+			var typeINotifyCompletion = Type.GetType("System.Runtime.CompilerServices.INotifyCompletion,mscorlib");
+			builtInTypes_INotifyCompletion = DefineBuiltInType(typeINotifyCompletion);
+			
+			var typeValueTuple = Type.GetType("System.ValueTuple`1,mscorlib");
+			builtInTypes_ValueTuple_1 = DefineBuiltInType(typeValueTuple);
+			typeValueTuple = Type.GetType("System.ValueTuple`2,mscorlib");
+			builtInTypes_ValueTuple_2 = DefineBuiltInType(typeValueTuple);
+			typeValueTuple = Type.GetType("System.ValueTuple`3,mscorlib");
+			builtInTypes_ValueTuple_3 = DefineBuiltInType(typeValueTuple);
+			typeValueTuple = Type.GetType("System.ValueTuple`4,mscorlib");
+			builtInTypes_ValueTuple_4 = DefineBuiltInType(typeValueTuple);
+			typeValueTuple = Type.GetType("System.ValueTuple`5,mscorlib");
+			builtInTypes_ValueTuple_5 = DefineBuiltInType(typeValueTuple);
+			typeValueTuple = Type.GetType("System.ValueTuple`6,mscorlib");
+			builtInTypes_ValueTuple_6 = DefineBuiltInType(typeValueTuple);
+			typeValueTuple = Type.GetType("System.ValueTuple`7,mscorlib");
+			builtInTypes_ValueTuple_7 = DefineBuiltInType(typeValueTuple);
+			typeValueTuple = Type.GetType("System.ValueTuple`8,mscorlib");
+			builtInTypes_ValueTuple_8 = DefineBuiltInType(typeValueTuple);
 		}
 
 		//	timer.Stop();
@@ -12410,10 +15258,12 @@ public class AssemblyDefinition : SymbolDefinition
 
 	public static TypeDefinition DefineBuiltInType(Type type)
 	{
+		if (type == null)
+			return null;
 		var assembly = FromAssembly(type.Assembly);
 		var @namespace = assembly.FindNamespace(type.Namespace);
 		var name = type.Name;
-		var index = name.IndexOf("`", StringComparison.Ordinal);
+		var index = name.IndexOf('`');
 		if (index > 0)
 			name = name.Substring(0, index);
 		var definition = @namespace.FindName(name, type.GetGenericArguments().Length, true);
@@ -12428,7 +15278,7 @@ public class AssemblyDefinition : SymbolDefinition
 		var start = 0;
 		while (start < namespaceName.Length)
 		{
-			var dotPos = namespaceName.IndexOf(".", start, StringComparison.Ordinal);
+			var dotPos = namespaceName.IndexOf('.', start);
 			var ns = dotPos == -1 ? namespaceName.Substring(start) : namespaceName.Substring(start, dotPos - start);
 			result = result.FindName(ns, 0, true) as NamespaceDefinition;
 			if (result == null)
@@ -12673,7 +15523,7 @@ public class ResolveAsTypeFixProvider : ICodeFixProvider
 			}
 			
 			if (token.text.Length > "Attribute".Length &&
-				!token.text.EndsWith("Attribute", StringComparison.Ordinal) &&
+				!token.text.FastEndsWith("Attribute") &&
 				token.parent.parent.RuleName == "typeOrGeneric" &&
 				token.parent.parent.parent != null &&
 				token.parent.parent.parent.parent != null &&
@@ -12762,7 +15612,7 @@ public class AddUsingStatementFix : UnknownSymbolFix, ICodeFix
 				{
 					var tokens = textBuffer.formatedLines[insertPos.line - 1].tokens;
 					if (tokens.Count <= nonWSToken.TokenIndex + 1 ||
-						!tokens[nonWSToken.TokenIndex + 1].text.StartsWith("/", StringComparison.Ordinal))
+						!tokens[nonWSToken.TokenIndex + 1].text.FastStartsWith("/"))
 					{
 						break;
 					}
@@ -12910,7 +15760,7 @@ public static class FGResolver
 					var targetAsNode = target as ParseTree.Node;
 					if (targetAsNode != null && targetAsNode.RuleName == "primaryExpressionPart")
 					{
-						var node0 = targetAsNode.NodeAt(0);
+						var node0 = targetAsNode.NodeAt(-1);
 						if (node0 != null && node0.RuleName == "arguments")
 						{
 							target = target.FindPreviousNode();
@@ -13011,6 +15861,8 @@ public static class FGResolver
 	public static SymbolDefinition GetResolvedSymbol_Internal(ParseTree.BaseNode baseNode)
 	{
 #endif
+	avoidRecursion:
+	
 		var leaf = baseNode as ParseTree.Leaf;
 		if (leaf != null)
 		{
@@ -13027,13 +15879,19 @@ public static class FGResolver
 		{
 			case "primaryExpressionStart":
 				if (node.numValidNodes < 3)
-					return GetResolvedSymbol(node.ChildAt(0));
+				{
+					baseNode = node.ChildAt(0);
+					goto avoidRecursion;
+				}
 				leaf = node.LeafAt(2);
 				return leaf != null ? leaf.resolvedSymbol : null;
 			case "primaryExpressionPart":
-				return GetResolvedSymbol(node.NodeAt(0));
+				baseNode = node.NodeAt(-1);
+				goto avoidRecursion;
 			case "arguments":
-				return GetResolvedSymbol(node.FindPreviousNode() as ParseTree.Node);
+			case "attributeArguments":
+				baseNode = node.FindPreviousNode() as ParseTree.Node;
+				goto avoidRecursion;
 			case "objectCreationExpression":
 				var newType = GetResolvedSymbol(node.FindPreviousNode() as ParseTree.Node);
 				if (newType == null || newType.kind == SymbolKind.Error)
@@ -13045,14 +15903,19 @@ public static class FGResolver
 				var arrayInstance = SymbolDefinition.ResolveNode(node, null, elementType);
 				return arrayInstance ?? SymbolDefinition.builtInTypes_Array.GetThisInstance();
 			case "nonArrayType":
-				var typeNameType = GetResolvedSymbol(node.NodeAt(0)) as TypeDefinitionBase;
+				var typeNameTypeOrConstructor = GetResolvedSymbol(node.NodeAt(0));
+				if (typeNameTypeOrConstructor != null && typeNameTypeOrConstructor.kind == SymbolKind.Constructor)
+					return typeNameTypeOrConstructor;
+				var typeNameType = typeNameTypeOrConstructor as TypeDefinitionBase;
 				if (typeNameType == null || typeNameType.kind == SymbolKind.Error)
 					typeNameType = SymbolDefinition.builtInTypes_object;
 				return node.numValidNodes == 1 ? typeNameType : typeNameType.MakeNullableType();
 			case "typeName":
-				return GetResolvedSymbol(node.NodeAt(0));
+				baseNode = node.NodeAt(0);
+				goto avoidRecursion;
 			case "namespaceOrTypeName":
-				return GetResolvedSymbol(node.NodeAt(node.numValidNodes & ~1));
+				baseNode = node.NodeAt(node.numValidNodes & ~1);
+				goto avoidRecursion;
 			case "accessIdentifier":
 				leaf = node.numValidNodes < 2 ? null : node.LeafAt(1);
 				if (leaf != null && leaf.resolvedSymbol == null)
@@ -13080,8 +15943,10 @@ public static class FGResolver
 			case "equalityExpression":
 			case "shiftExpression":
 			case "primaryExpression":
+			case "tupleExpression":
 			case "type":
 			case "globalNamespace":
+			case "nameofExpression":
 				return SymbolDefinition.ResolveNode(node, null, null, 0);
 			default:
 #if SI3_WARNINGS
@@ -13136,6 +16001,10 @@ public static class FGResolver
 				case SymbolKind.Parameter:
 				case SymbolKind.CatchParameter:
 				case SymbolKind.Variable:
+				case SymbolKind.TupleDeconstructVariable:
+				case SymbolKind.OutVariable:
+				case SymbolKind.IsVariable:
+				case SymbolKind.CaseVariable:
 				case SymbolKind.ForEachVariable:
 				case SymbolKind.FromClauseVariable:
 				case SymbolKind.EnumMember:
@@ -13145,9 +16014,11 @@ public static class FGResolver
 					break;
 				case SymbolKind.Null:
 				case SymbolKind.Label:
+				case SymbolKind.TupleType:
 					return;
 				case SymbolKind.ImportedNamespace:
 				case SymbolKind.TypeAlias:
+				case SymbolKind.ImportedStaticType:
 				default:
 					throw new ArgumentOutOfRangeException();
 			}
@@ -13202,6 +16073,14 @@ public static class FGResolver
 
 	public static ParseTree.Node ResolveNode(ParseTree.Node node)
 	{
+#if SI3_WARNINGS
+		if (MethodGroupDefinition.argumentTypesStack.Count > 50)
+		{
+			Debug.LogError(node);
+			return null;
+		}
+#endif
+		
 		var result = ResolveNodeInternal(node);
 		
 		if (MethodGroupDefinition.argumentTypesStack.Count != 0)
@@ -13212,6 +16091,8 @@ public static class FGResolver
 			Debug.LogError("modifiersStack.Count == " + MethodGroupDefinition.modifiersStack.Count);
 		if (MethodGroupDefinition.namedArgumentsStack.Count != 0)
 			Debug.LogError("namedArguments.Count == " + MethodGroupDefinition.namedArgumentsStack.Count);
+		if (MethodGroupDefinition.argumentNodesStack.Count != 0)
+			Debug.LogError("argumentNodesStack.Count == " + MethodGroupDefinition.argumentNodesStack.Count);
 		
 		if (MethodGroupDefinition.methodCandidatesStack.Count != 0)
 			Debug.LogError("methodCandidatesStack.Count == " + MethodGroupDefinition.methodCandidatesStack.Count);
@@ -13251,6 +16132,11 @@ public static class FGResolver
 				// case "VAR":
 //				case "localVariableType":
 //				case "localVariableDeclaration":
+				case "caseVariableDeclarator":
+				case "implicitDeconstructVariableDeclarator":
+				case "explicitDeconstructVariableDeclarator":
+				case "outVariableDeclarator":
+				case "isVariableDeclarator":
 				case "arrayCreationExpression":
 				case "implicitArrayCreationExpression":
 				case "arrayInitializer":
@@ -13263,6 +16149,8 @@ public static class FGResolver
 			//	case "unaryExpression":
 			//	case "modifiers":
 				case "globalNamespace":
+				case "tupleElement":
+				case "tupleExpressionElement":
 					node = node.parent;
 				//	UnityEngine.Debug.Log("--> " + node.RuleName);
 					continue;
@@ -13298,7 +16186,10 @@ public static class FGResolver
 			MethodGroupDefinition.resolvedArgumentsStack.Clear();
 			MethodGroupDefinition.modifiersStack.Clear();
 			MethodGroupDefinition.namedArgumentsStack.Clear();
+			MethodGroupDefinition.argumentNodesStack.Clear();
+			
 			MethodGroupDefinition.methodCandidatesStack.Clear();
+			
 			return null;
 		}
 		
@@ -13370,9 +16261,13 @@ public static class FGResolver
 		case SymbolKind.Field:
 		case SymbolKind.Property:
 		case SymbolKind.Parameter:
+		case SymbolKind.CaseVariable:
 		case SymbolKind.ForEachVariable:
 		case SymbolKind.FromClauseVariable:
 		case SymbolKind.Variable:
+		case SymbolKind.TupleDeconstructVariable:
+		case SymbolKind.OutVariable:
+		case SymbolKind.IsVariable:
 		case SymbolKind.LocalConstant:
 		case SymbolKind.ConstantField:
 		case SymbolKind.Event:
@@ -13407,6 +16302,26 @@ public static class FGResolver
 				// always initialized
 			}
 			else if (parentRule == "catchExceptionIdentifier")
+			{
+				// always initialized
+			}
+			else if (parentRule == "caseVariableDeclarator")
+			{
+				// always initialized
+			}
+			else if (parentRule == "implicitDeconstructVariableDeclarator")
+			{
+				// always initialized
+			}
+			else if (parentRule == "explicitDeconstructVariableDeclarator")
+			{
+				// always initialized
+			}
+			else if (parentRule == "outVariableDeclarator")
+			{
+				// always initialized
+			}
+			else if (parentRule == "isVariableDeclarator")
 			{
 				// always initialized
 			}

@@ -1,9 +1,9 @@
 ﻿/* SCRIPT INSPECTOR 3
- * version 3.0.26, February 2020
- * Copyright © 2012-2020, Flipbook Games
+ * version 3.0.33, May 2022
+ * Copyright © 2012-2022, Flipbook Games
  * 
- * Unity's legendary editor for C#, UnityScript, Boo, Shaders, and text,
- * now transformed into an advanced C# IDE!!!
+ * Script Inspector 3 - World's Fastest IDE for Unity
+ * 
  * 
  * Follow me on http://twitter.com/FlipbookGames
  * Like Flipbook Games on Facebook http://facebook.com/FlipbookGames
@@ -265,14 +265,21 @@ public class FGCodeWindow : EditorWindow
 
 	private static void InitOnLoad()
 	{
-		EditorApplication.update -= InitOnLoad;
-		EditorApplication.projectWindowItemOnGUI -= OnProjectItemGUI;
-		EditorApplication.projectWindowItemOnGUI += OnProjectItemGUI;
+		try
+		{
+			EditorApplication.update -= InitOnLoad;
+			EditorApplication.projectWindowItemOnGUI -= OnProjectItemGUI;
+			EditorApplication.projectWindowItemOnGUI += OnProjectItemGUI;
 
-		if (!prefsLoaded)
-			LoadPrefs();
+			if (!prefsLoaded)
+				LoadPrefs();
 		
-		FGConsole.OpenIfConsoleIsOpen();
+			FGConsole.OpenIfConsoleIsOpen();
+		}
+		catch (System.Exception e)
+		{
+			Debug.LogException(e);
+		}
 	}
 
 	private static void OnProjectItemGUI(string item, Rect selectionRect)
@@ -303,17 +310,14 @@ public class FGCodeWindow : EditorWindow
 		}
 
 		string path = AssetDatabase.GUIDToAssetPath(item);
-		if (path.EndsWith(".dll", System.StringComparison.OrdinalIgnoreCase) ||
-			path.EndsWith(".exe", System.StringComparison.OrdinalIgnoreCase))
+		if (path.EndsWithDll() || path.EndsWithExe())
 		{
 			return;
 		}
 		
 		bool actionKey = EditorGUI.actionKey;
 		
-		if (!path.EndsWith(".cs", System.StringComparison.OrdinalIgnoreCase) &&
-			!path.EndsWith(".js", System.StringComparison.OrdinalIgnoreCase) &&
-			!path.EndsWith(".boo", System.StringComparison.OrdinalIgnoreCase))
+		if (!path.EndsWithCS() && !path.EndsWithJS() && !path.EndsWithBoo())
 		{
 			// not a script
 
@@ -404,8 +408,7 @@ public class FGCodeWindow : EditorWindow
 		string scriptPath = AssetDatabase.GetAssetPath(monoScript);
 		if (string.IsNullOrEmpty(scriptPath))
 			return;
-		if (scriptPath.EndsWith(".dll", System.StringComparison.OrdinalIgnoreCase) ||
-			scriptPath.EndsWith(".exe", System.StringComparison.OrdinalIgnoreCase))
+		if (scriptPath.EndsWithDll() || scriptPath.EndsWithExe())
 		{
 			return;
 		}
@@ -425,8 +428,7 @@ public class FGCodeWindow : EditorWindow
 		string scriptPath = AssetDatabase.GetAssetPath(monoScript);
 		if (string.IsNullOrEmpty(scriptPath))
 			return false;
-		if (scriptPath.EndsWith(".dll", System.StringComparison.OrdinalIgnoreCase) ||
-			scriptPath.EndsWith(".exe", System.StringComparison.OrdinalIgnoreCase))
+		if (scriptPath.EndsWithDll() || scriptPath.EndsWithExe())
 		{
 			return false;
 		}
@@ -448,8 +450,7 @@ public class FGCodeWindow : EditorWindow
 		string scriptPath = AssetDatabase.GetAssetPath(monoScript);
 		if (string.IsNullOrEmpty(scriptPath))
 			return;
-		if (scriptPath.EndsWith(".dll", System.StringComparison.OrdinalIgnoreCase) ||
-			scriptPath.EndsWith(".exe", System.StringComparison.OrdinalIgnoreCase))
+		if (scriptPath.EndsWithDll() || scriptPath.EndsWithExe())
 		{
 			return;
 		}
@@ -472,8 +473,7 @@ public class FGCodeWindow : EditorWindow
 		string scriptPath = AssetDatabase.GetAssetPath(monoScript);
 		if (string.IsNullOrEmpty(scriptPath))
 			return false;
-		if (scriptPath.EndsWith(".dll", System.StringComparison.OrdinalIgnoreCase) ||
-			scriptPath.EndsWith(".exe", System.StringComparison.OrdinalIgnoreCase))
+		if (scriptPath.EndsWithDll() || scriptPath.EndsWithExe())
 		{
 			return false;
 		}
@@ -527,8 +527,7 @@ public class FGCodeWindow : EditorWindow
 		if (asset is MonoScript)
 		{
 			var assetPath = AssetDatabase.GetAssetPath(instanceID);
-			if (assetPath.EndsWith(".dll", System.StringComparison.OrdinalIgnoreCase) ||
-				assetPath.EndsWith(".exe", System.StringComparison.OrdinalIgnoreCase))
+			if (assetPath.EndsWithDll() || assetPath.EndsWithExe())
 			{
 				return false;
 			}
@@ -623,6 +622,9 @@ public class FGCodeWindow : EditorWindow
 		}
 		
 		string path = AssetDatabase.GUIDToAssetPath(guid);
+		if (string.IsNullOrEmpty(path))
+			return null;
+		
 		Object target = AssetDatabase.LoadAssetAtPath(path, typeof(MonoScript)) as MonoScript;
 		if (target == null)
 		{
@@ -663,7 +665,8 @@ public class FGCodeWindow : EditorWindow
 	{
 		pingLineWhenLoaded = line;
 		EditorApplication.update -= PingLineWhenLoaded;
-		EditorApplication.update += PingLineWhenLoaded;
+		if (pingLineWhenLoaded >= 1)
+			EditorApplication.update += PingLineWhenLoaded;
 	}
 	
 	private void SetCursorPosition(int line, int characterIndex)
@@ -696,8 +699,7 @@ public class FGCodeWindow : EditorWindow
 				return null;
 			
 			var assetPath = AssetDatabase.GetAssetPath(target);
-			if (assetPath.EndsWith(".dll", System.StringComparison.OrdinalIgnoreCase) ||
-				assetPath.EndsWith(".exe", System.StringComparison.OrdinalIgnoreCase))
+			if (assetPath.EndsWithDll() || assetPath.EndsWithExe())
 			{
 				return null;
 			}
@@ -725,8 +727,12 @@ public class FGCodeWindow : EditorWindow
 #if !UNITY_2019_2_OR_NEWER
 			rc.y += 20f;
 #endif
+#if !UNITY_2020_1_OR_NEWER
+#if !UNITY_2019_4_OR_NEWER
 			rc.height += 1f;
+#endif
 			rc.width -= 1f;
+#endif
 #elif UNITY_2018_3_OR_NEWER
 			rc.y += 25f;
 			rc.height -= 3f;
@@ -978,38 +984,51 @@ public class FGCodeWindow : EditorWindow
 
 	public void OnFirstUpdate()
 	{
-		Repaint();
-		
-		EditorApplication.update -= OnFirstUpdate;
-		firstUpdateDone = true;
-
-		if (targetAsset != null)
+		try
 		{
-			if (!guidHistory.Contains(targetAssetGuid))
+			Repaint();
+		
+			EditorApplication.update -= OnFirstUpdate;
+			firstUpdateDone = true;
+
+			if (targetAsset != null)
 			{
-				if (this == focusedWindow && guidHistory.Count > 0)
-					guidHistory.Insert(0, targetAssetGuid);
-				else
-					guidHistory.Add(targetAssetGuid);
+				if (!guidHistory.Contains(targetAssetGuid))
+				{
+					if (this == focusedWindow && guidHistory.Count > 0)
+						guidHistory.Insert(0, targetAssetGuid);
+					else
+						guidHistory.Add(targetAssetGuid);
 				
-				SaveGuidHistory();
-			}
+					SaveGuidHistory();
+				}
 			
-			SaveDefaultPosition();
+				SaveDefaultPosition();
 			
 #if UNITY_4_0 || UNITY_4_1 || UNITY_4_2 || UNITY_4_3 || UNITY_4_4 || UNITY_4_5 || UNITY_4_6 || UNITY_4_7 || UNITY_5_0
-			title = System.IO.Path.GetFileName(AssetDatabase.GetAssetPath(targetAsset));
+				title = System.IO.Path.GetFileName(AssetDatabase.GetAssetPath(targetAsset));
 #else
-			titleContent.text = System.IO.Path.GetFileName(AssetDatabase.GetAssetPath(targetAsset));
+				var assetPath = AssetDatabase.GetAssetPath(targetAsset);
+				titleContent.text = System.IO.Path.GetFileName(assetPath);
+				if (assetPath.StartsWithIgnoreCase("assets/"))
+				{
+					assetPath = assetPath.Substring("Assets/".Length, assetPath.Length - "Assets/".Length - titleContent.text.Length);
+					titleContent.tooltip = assetPath == "" ? null : "in " + assetPath;
+				}
 #endif
-		}
-		else
-		{
-			codeWindows.Remove(this);
-			Close();
-		}
+			}
+			else
+			{
+				codeWindows.Remove(this);
+				Close();
+			}
 		
-		UpdateWindowTitle();
+			UpdateWindowTitle();
+		}
+		catch (System.Exception e)
+		{
+			Debug.LogException(e);
+		}
 	}
 	
 	private void OnFirstRepaint()
@@ -1032,7 +1051,13 @@ public class FGCodeWindow : EditorWindow
 #if UNITY_4_0 || UNITY_4_1 || UNITY_4_2 || UNITY_4_3 || UNITY_4_4 || UNITY_4_5 || UNITY_4_6 || UNITY_4_7 || UNITY_5_0
 				wnd.title = System.IO.Path.GetFileName(AssetDatabase.GUIDToAssetPath(guid));
 #else
-				wnd.titleContent.text = System.IO.Path.GetFileName(AssetDatabase.GUIDToAssetPath(guid));
+				var assetPath = AssetDatabase.GUIDToAssetPath(guid);
+				wnd.titleContent.text = System.IO.Path.GetFileName(assetPath);
+				if (assetPath.StartsWithIgnoreCase("assets/"))
+				{
+					assetPath = assetPath.Substring("Assets/".Length, assetPath.Length - "Assets/".Length - wnd.titleContent.text.Length);
+					wnd.titleContent.tooltip = assetPath == "" ? null : "in " + assetPath;
+				}
 #endif
 				wnd.UpdateWindowTitle();
 				wnd.Repaint();
@@ -1042,21 +1067,35 @@ public class FGCodeWindow : EditorWindow
 
 	private void PingLineWhenLoaded()
 	{
-		if (textEditor.CanEdit() && textEditor.codeViewRect.width > 0f)
+		try
 		{
-			EditorApplication.update -= PingLineWhenLoaded;
-			textEditor.PingLine(pingLineWhenLoaded);
+			if (textEditor.CanEdit() && textEditor.codeViewRect.width > 0f)
+			{
+				EditorApplication.update -= PingLineWhenLoaded;
+				textEditor.PingLine(pingLineWhenLoaded);
+			}
+		}
+		catch (System.Exception e)
+		{
+			Debug.LogException(e);
 		}
 	}
 
 	private void SetCursorWhenLoaded()
 	{
-		if (textEditor.CanEdit() && textEditor.codeViewRect.width > 0f)
+		try
 		{
-			EditorApplication.update -= SetCursorWhenLoaded;
-			textEditor.SetCursorPosition(setCursorLineWhenLoaded, setCursorCharacterIndexWhenLoaded);
-			if (setSelectionLengthWhenLoaded > 0)
-				textEditor.PingText(textEditor.caretPosition, setSelectionLengthWhenLoaded, FGTextEditor.yellowPingColor);
+			if (textEditor.CanEdit() && textEditor.codeViewRect.width > 0f)
+			{
+				EditorApplication.update -= SetCursorWhenLoaded;
+				textEditor.SetCursorPosition(setCursorLineWhenLoaded, setCursorCharacterIndexWhenLoaded);
+				if (setSelectionLengthWhenLoaded > 0)
+					textEditor.PingText(textEditor.caretPosition, setSelectionLengthWhenLoaded, FGTextEditor.yellowPingColor);
+			}
+		}
+		catch (System.Exception e)
+		{
+			Debug.LogException(e);
 		}
 	}
 	
@@ -1064,12 +1103,19 @@ public class FGCodeWindow : EditorWindow
 	
 	private void FocusNextTabOnUpdate()
 	{
-		EditorApplication.update -= FocusNextTabOnUpdate;
-		
-		if (tabToFocusOnUpdate)
+		try
 		{
-			tabToFocusOnUpdate.Focus();
-			tabToFocusOnUpdate = null;
+			EditorApplication.update -= FocusNextTabOnUpdate;
+		
+			if (tabToFocusOnUpdate)
+			{
+				tabToFocusOnUpdate.Focus();
+				tabToFocusOnUpdate = null;
+			}
+		}
+		catch (System.Exception e)
+		{
+			Debug.LogException(e);
 		}
 	}
 	
@@ -1212,11 +1258,18 @@ public class FGCodeWindow : EditorWindow
 	
 	private static void AddMostRecentGuidOnUpdate()
 	{
-		EditorApplication.update -= AddMostRecentGuidOnUpdate;
+		try
+		{
+			EditorApplication.update -= AddMostRecentGuidOnUpdate;
 		
-		var focusedCodeWindow = focusedWindow as FGCodeWindow;
-		if (focusedCodeWindow != null && !string.IsNullOrEmpty(focusedCodeWindow.targetAssetGuid))
-			AddMostRecentGuidHistory(focusedCodeWindow.targetAssetGuid);
+			var focusedCodeWindow = focusedWindow as FGCodeWindow;
+			if (focusedCodeWindow != null && !string.IsNullOrEmpty(focusedCodeWindow.targetAssetGuid))
+				AddMostRecentGuidHistory(focusedCodeWindow.targetAssetGuid);
+		}
+		catch (System.Exception e)
+		{
+			Debug.LogException(e);
+		}
 	}
 	
 	private static void SaveGuidHistory()
@@ -1314,7 +1367,7 @@ public class FGCodeWindow : EditorWindow
 				}
 				else if (isOSX && !Event.current.alt && EditorGUI.actionKey)
 				{
-					if (Event.current.shift && Event.current.keyCode == KeyCode.W ||
+					if (/*Event.current.shift &&*/ Event.current.keyCode == KeyCode.W ||
 						!Event.current.shift && Event.current.keyCode == KeyCode.F4)
 					{
 						Event.current.Use();
@@ -1350,8 +1403,7 @@ public class FGCodeWindow : EditorWindow
 					foreach (Object obj in DragAndDrop.objectReferences)
 					{
 						var assetPath = AssetDatabase.GetAssetPath(obj);
-						if (assetPath.EndsWith(".dll", System.StringComparison.OrdinalIgnoreCase) ||
-							assetPath.EndsWith(".exe", System.StringComparison.OrdinalIgnoreCase))
+						if (assetPath.EndsWithDll() || assetPath.EndsWithExe())
 						{
 							continue;
 						}
@@ -1367,8 +1419,8 @@ public class FGCodeWindow : EditorWindow
 								{
 									assetPath = AssetDatabase.GetAssetPath(monoScript);
 									if (!string.IsNullOrEmpty(assetPath) &&
-										assetPath.StartsWith("Assets/", System.StringComparison.OrdinalIgnoreCase) &&
-										!assetPath.EndsWith(".dll", System.StringComparison.OrdinalIgnoreCase))
+										assetPath.StartsWithIgnoreCase("assets/") &&
+										!assetPath.EndsWithDll())
 									{
 										accepted.Add(monoScript);
 										ask = true;
@@ -1376,7 +1428,7 @@ public class FGCodeWindow : EditorWindow
 								}
 							}
 						}
-						else if (assetPath.StartsWith("Assets/", System.StringComparison.OrdinalIgnoreCase))
+						else if (assetPath.StartsWithIgnoreCase("assets/"))
 						{
 							if (obj is MonoScript)
 								accepted.Add(obj);
@@ -1391,7 +1443,7 @@ public class FGCodeWindow : EditorWindow
 									if (shaderID != 0)
 									{
 										assetPath = AssetDatabase.GetAssetPath(shaderID);
-										if (!string.IsNullOrEmpty(assetPath) && assetPath.StartsWith("Assets/", System.StringComparison.OrdinalIgnoreCase))
+										if (!string.IsNullOrEmpty(assetPath) && assetPath.StartsWithIgnoreCase("assets/"))
 											accepted.Add(material.shader);
 									}
 								}
@@ -1488,7 +1540,7 @@ public class FGCodeWindow : EditorWindow
 		}
 		
 #if UNITY_4_0 || UNITY_4_1 || UNITY_4_2 || UNITY_4_3 || UNITY_4_4 || UNITY_4_5 || UNITY_4_6 || UNITY_4_7 || UNITY_5_0
-		if (title.StartsWith("*", System.StringComparison.Ordinal))
+		if (title.FastStartsWith("*"))
 		{
 			if (!isModified)
 				title = title.Substring(1);
@@ -1503,7 +1555,7 @@ public class FGCodeWindow : EditorWindow
 				return;
 		}
 #else
-		if (titleContent.text.StartsWith("*", System.StringComparison.Ordinal))
+		if (titleContent.text.FastStartsWith("*"))
 		{
 			if (!isModified)
 				titleContent.text = titleContent.text.Substring(1);
@@ -1964,8 +2016,12 @@ public class FGCodeWindow : EditorWindow
 #if !UNITY_2019_2_OR_NEWER
 			rc.y += 20f;
 #endif
+#if !UNITY_2020_1_OR_NEWER
+#if !UNITY_2019_4_OR_NEWER
 			rc.height += 1f;
+#endif
 			rc.width -= 1f;
+#endif
 #elif !UNITY_2017_1_OR_NEWER
 			rc.y -= 5f;
 #elif UNITY_2018_3_OR_NEWER

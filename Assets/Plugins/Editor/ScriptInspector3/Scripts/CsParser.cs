@@ -1,9 +1,9 @@
 ﻿/* SCRIPT INSPECTOR 3
- * version 3.0.26, February 2020
- * Copyright © 2012-2020, Flipbook Games
+ * version 3.0.33, May 2022
+ * Copyright © 2012-2022, Flipbook Games
  * 
- * Unity's legendary editor for C#, UnityScript, Boo, Shaders, and text,
- * now transformed into an advanced C# IDE!!!
+ * Script Inspector 3 - World's Fastest IDE for Unity
+ * 
  * 
  * Follow me on http://twitter.com/FlipbookGames
  * Like Flipbook Games on Facebook http://facebook.com/FlipbookGames
@@ -55,7 +55,7 @@ public class CsParser : FGParser
 	private static readonly HashSet<string> csOperators = new HashSet<string>{
 		"++", "--", "->", "+", "-", "!", "~", "++", "--", "&", "*", "/", "%", "+", "-", "<<", ">>", "<", ">",
 		"<=", ">=", "==", "!=", "&", "^", "|", "&&", "||", "??", "?", "::", ":",
-		"=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", "=>"
+		"=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", "=>",
 	};
 
 	private static readonly HashSet<string> preprocessorKeywords = new HashSet<string>{
@@ -231,13 +231,11 @@ public class CsParser : FGParser
 			for (var i = options.Length; i --> 0; )
 			{
 				var option = options[i];
-				if (option.StartsWith("-define:", StringComparison.OrdinalIgnoreCase) ||
-					option.StartsWith("/define:", StringComparison.OrdinalIgnoreCase))
+				if (option.StartsWithIgnoreCase("-define:") || option.StartsWithIgnoreCase("/define:"))
 				{
 					option = option.Substring("-define:".Length);
 				}
-				else if (option.StartsWith("-d:", StringComparison.OrdinalIgnoreCase) ||
-					option.StartsWith("/d:", StringComparison.OrdinalIgnoreCase))
+				else if (option.StartsWithIgnoreCase("-d:") || option.StartsWithIgnoreCase("/d:"))
 				{
 					option = option.Substring("-d:".Length);
 				}
@@ -286,6 +284,8 @@ public class CsParser : FGParser
 		}
 		
 		//sw2.Start();
+		if (formatedLine.tokens != null)
+			formatedLine.tokens.Clear();
 		Tokenize(textLine, formatedLine);
 
 //		syntaxTree.SetLineTokens(currentLine, lineTokens);
@@ -322,6 +322,10 @@ public class CsParser : FGParser
 								token.style = textBuffer.styles.builtInRefTypeStyle;
 							else
 								token.style = textBuffer.styles.builtInValueTypeStyle;
+						}
+						else if (IsControlKeyword(token.text))
+						{
+							token.style = textBuffer.styles.controlKeywordStyle;
 						}
 						else
 						{
@@ -371,6 +375,11 @@ public class CsParser : FGParser
 					case SyntaxToken.Kind.StringLiteral:
 					case SyntaxToken.Kind.VerbatimStringBegin:
 					case SyntaxToken.Kind.VerbatimStringLiteral:
+					case SyntaxToken.Kind.InterpolatedStringWholeLiteral:
+					case SyntaxToken.Kind.InterpolatedStringStartLiteral:
+					case SyntaxToken.Kind.InterpolatedStringMidLiteral:
+					case SyntaxToken.Kind.InterpolatedStringEndLiteral:
+					case SyntaxToken.Kind.InterpolatedStringFormatLiteral:
 						token.style = textBuffer.styles.stringStyle;
 						break;
 				}
@@ -379,11 +388,36 @@ public class CsParser : FGParser
 		}
 	}
 	
+	protected bool IsControlKeyword(string text)
+	{
+		return
+			text == "if" ||
+			text == "else" ||
+			text == "for" ||
+			text == "foreach" ||
+			text == "while" ||
+			text == "do" ||
+			text == "break" ||
+			text == "continue" ||
+			text == "return" ||
+			text == "yield" ||
+			text == "when" ||
+			text == "switch" ||
+			text == "case" ||
+			text == "try" ||
+			text == "catch" ||
+			text == "finally" ||
+			text == "throw";
+	}
+	
 	protected override void Tokenize(string line, FGTextBuffer.FormatedLine formatedLine)
 	{
-		var tokens = formatedLine.tokens ?? new List<SyntaxToken>();
-		formatedLine.tokens = tokens;
-		tokens.Clear();
+		var tokens = formatedLine.tokens;
+		if (tokens == null)
+		{
+			tokens = new List<SyntaxToken>();
+			formatedLine.tokens = tokens;
+		}
 
 		int startAt = 0;
 		int length = line.Length;
@@ -680,7 +714,7 @@ public class CsParser : FGParser
 					var textArgument = line.Substring(startAt);
 					textArgument.TrimEnd(new [] {' ', '\t'});
 					tokens.Add(new SyntaxToken(SyntaxToken.Kind.PreprocessorArguments, textArgument) { formatedLine = formatedLine });
-					startAt = length - textArgument.Length;
+					startAt += textArgument.Length;
 					if (startAt < length)
 						tokens.Add(new SyntaxToken(SyntaxToken.Kind.Whitespace, line.Substring(startAt)) { formatedLine = formatedLine });
 				}
@@ -718,7 +752,7 @@ public class CsParser : FGParser
 				}
 				else if (firstChar == '"')
 				{
-					token = ScanStringLiteral(line, ref startAt);
+					token = FGParser.ScanStringLiteral(line, ref startAt);
 					token.tokenKind = SyntaxToken.Kind.PreprocessorArguments;
 					tokens.Add(token);
 					token.formatedLine = formatedLine;
@@ -795,11 +829,9 @@ public class CsParser : FGParser
 						break;
 					}
 
-					if (line[startAt] == '\"')
+					if (line[startAt] == '\"' || !isCSharp4 && line[startAt] == '$')
 					{
-						token = ScanStringLiteral(line, ref startAt);
-						tokens.Add(token);
-						token.formatedLine = formatedLine;
+						ScanStringLiteral(line, ref startAt, formatedLine);
 						break;
 					}
 
@@ -835,24 +867,25 @@ public class CsParser : FGParser
 					var punctuatorStart = startAt++;
 					if (startAt < line.Length)
 					{
+						var nextCharacter = line[startAt];
 						switch (line[punctuatorStart])
 						{
 							case '?':
-								if (line[startAt] == '?')
+								if (nextCharacter == '?')
 									++startAt;
 								break;
 							case '+':
-								if (line[startAt] == '+' || line[startAt] == '=')
+								if (nextCharacter == '+' || nextCharacter == '=')
 									++startAt;
 								break;
 							case '-':
-								if (line[startAt] == '-' || line[startAt] == '=')
+								if (nextCharacter == '-' || nextCharacter == '=')
 									++startAt;
 								break;
 							case '<':
-								if (line[startAt] == '=')
+								if (nextCharacter == '=')
 									++startAt;
-								else if (line[startAt] == '<')
+								else if (nextCharacter == '<')
 								{
 									++startAt;
 									if (startAt < line.Length && line[startAt] == '=')
@@ -860,7 +893,7 @@ public class CsParser : FGParser
 								}
 								break;
 							case '>':
-								if (line[startAt] == '=')
+								if (nextCharacter == '=')
 									++startAt;
 								//else if (startAt < line.Length && line[startAt] == '>')
 								//{
@@ -870,15 +903,15 @@ public class CsParser : FGParser
 								//}
 								break;
 							case '=':
-								if (line[startAt] == '=' || line[startAt] == '>')
+								if (nextCharacter == '=' || nextCharacter == '>')
 									++startAt;
 								break;
 							case '&':
-								if (line[startAt] == '=' || line[startAt] == '&')
+								if (nextCharacter == '=' || nextCharacter == '&')
 									++startAt;
 								break;
 							case '|':
-								if (line[startAt] == '=' || line[startAt] == '|')
+								if (nextCharacter == '=' || nextCharacter == '|')
 									++startAt;
 								break;
 							case '*':
@@ -886,11 +919,11 @@ public class CsParser : FGParser
 							case '%':
 							case '^':
 							case '!':
-								if (line[startAt] == '=')
+								if (nextCharacter == '=')
 									++startAt;
 								break;
 							case ':':
-								if (line[startAt] == ':')
+								if (nextCharacter == ':')
 									++startAt;
 								break;
 						}
@@ -960,6 +993,286 @@ public class CsParser : FGParser
 	private bool IsOperator(string text)
 	{
 		return csOperators.Contains(text);
+	}
+	
+	private void ScanStringLiteral(string line, ref int startAt, FGTextBuffer.FormatedLine formatedLine)
+	{
+		if (line[startAt] == '$')
+		{
+			ScanInterpolatedStringLiteral(line, ref startAt, formatedLine);
+			return;
+		}
+		
+		var i = startAt + 1;
+		while (i < line.Length)
+		{
+			if (line[i] == '\"')
+			{
+				++i;
+				break;
+			}
+			if (line[i] == '\\' && i < line.Length - 1)
+				++i;
+			++i;
+		}
+		
+		if (formatedLine != null)
+		{
+			var token = new SyntaxToken(SyntaxToken.Kind.StringLiteral, line.Substring(startAt, i - startAt));
+			formatedLine.tokens.Add(token);
+			token.formatedLine = formatedLine;
+		}
+		
+		startAt = i;
+	}
+	
+	private void ScanInterpolatedStringLiteral(string line, ref int startAt, FGTextBuffer.FormatedLine formatedLine)
+	{
+		var interpolatedStringTokenKind = SyntaxToken.Kind.InterpolatedStringStartLiteral;
+		
+		var i = startAt + 1;
+		if (i < line.Length && line[i] == '"')
+		{
+			++i;
+
+			while (i < line.Length)
+			{
+				char c = line[i];
+				
+				if (c == '{')
+				{
+					if (i + 1 < line.Length && line[i + 1] == '{')
+					{
+						++i;
+					}
+					else
+					{
+						if (formatedLine != null)
+						{
+							var token = new SyntaxToken(
+								interpolatedStringTokenKind,
+								line.Substring(startAt, i - startAt));
+							formatedLine.tokens.Add(token);
+							token.formatedLine = formatedLine;
+						}
+						
+						interpolatedStringTokenKind = SyntaxToken.Kind.InterpolatedStringMidLiteral;
+
+						startAt = i;
+						int formatStartAt = SkipStringInterpolation(line, ref i);
+						if (formatedLine != null)
+						{
+							if (formatStartAt >= 0)
+							{
+								Tokenize(line.Substring(startAt, formatStartAt - startAt), formatedLine);
+								
+								if (line[formatStartAt] == ':')
+								{
+									var token = new SyntaxToken(SyntaxToken.Kind.Punctuator, ":");
+									formatedLine.tokens.Add(token);
+									token.formatedLine = formatedLine;
+									
+									int formatLength = i - (formatStartAt + 1);
+									if (formatLength > 0)
+									{
+										token = new SyntaxToken(
+											SyntaxToken.Kind.InterpolatedStringFormatLiteral,
+											line.Substring(formatStartAt + 1, formatLength));
+										formatedLine.tokens.Add(token);
+										token.formatedLine = formatedLine;
+									}
+								}
+							}
+							else
+							{
+								Tokenize(line.Substring(startAt, i - startAt), formatedLine);
+							}
+										
+							if (i < line.Length && line[i] == '}')
+							{
+								++i;
+								SyntaxToken token = new SyntaxToken(SyntaxToken.Kind.Punctuator, "}");
+								formatedLine.tokens.Add(token);
+								token.formatedLine = formatedLine;
+							}
+						}
+						startAt = i;
+						
+						continue;
+					}
+				}
+				
+				++i;
+				
+				if (c == '"')
+				{
+					break;
+				}
+				
+				if (c == '\\' && i < line.Length)
+				{
+					++i;
+				}
+			}
+		}
+
+		if (formatedLine != null)
+		{
+			SyntaxToken token;
+			if (interpolatedStringTokenKind == SyntaxToken.Kind.InterpolatedStringStartLiteral)
+			{
+				token = new SyntaxToken(
+					SyntaxToken.Kind.InterpolatedStringWholeLiteral,
+					line.Substring(startAt, i - startAt));
+				formatedLine.tokens.Add(token);
+				token.formatedLine = formatedLine;
+			}
+			else
+			{
+				token = new SyntaxToken(
+					SyntaxToken.Kind.InterpolatedStringEndLiteral,
+					line.Substring(startAt, i - startAt));
+				formatedLine.tokens.Add(token);
+				token.formatedLine = formatedLine;
+			}
+		}
+		
+		startAt = i;
+	}
+
+	private int SkipStringInterpolation(string line, ref int i)
+	{
+		var length = line.Length;
+		++i;
+		while (i < length)
+		{
+			char c = line[i];
+			if (c == '}' || c == ':')
+				break;
+			
+			if (!ScanRegularBalancedText(line, ref i, true))
+				break;
+		}
+		
+		if (i >= length)
+			return -1;
+		
+		if (line[i] == ':')
+		{
+			var formatStartAt = i;
+			++i;
+			
+			// skip format string (without closing brace)	
+			while (i < length)
+			{
+				char c = line[i];
+				if (/*c == ':' ||*/ c == '"')
+					break;
+				if (c == '{')
+				{
+					if (i + 1 < line.Length && line[i + 1] == '{')
+						++i;
+					else
+						break;
+				}
+				else if (c == '}')
+				{
+					if (i + 1 < line.Length && line[i + 1] == '}')
+						++i;
+					else
+						break;
+				}
+				
+				++i;
+				
+				if (c == '\\')
+				{
+					if (i < line.Length)
+						++i;
+					else
+						break;
+				}
+			}
+
+			return formatStartAt;
+		}
+		
+		return -1;
+	}
+
+	private bool ScanRegularBalancedText(string line, ref int i, bool scanInterpolationFormat)
+	{
+		var startAt = i;
+		var length = line.Length;
+		if (i >= length)
+			return false;
+		
+		while (i < length)
+		{
+			char c = line[i];
+			if (c == '$' || c == '"' || c == '@' && c + 1 < length && line[c + 1] == '"')
+			{
+				ScanStringLiteral(line, ref i, null);
+				continue;
+			}
+			if (c == '/' && i + 1 < length)
+			{
+				++i;
+				
+				char next = line[i];
+				if (next == '/')
+				{
+					i = length;
+					break;
+				}
+				else if (next == '*')
+				{
+					++i;
+					while (i < length)
+					{
+						if (line[i] != '*')
+						{
+							++i;
+							continue;
+						}
+						++i;
+						if (i < length && line[i] == '/')
+						{
+							++i;
+							break;
+						}
+					}
+					continue;
+				}
+			}
+			else if (c == '}' || c == ')' || c == ']' || scanInterpolationFormat && c == ':')
+			{
+				break;
+			}
+			
+			++i;
+			
+			if (c == '{')
+			{
+				ScanRegularBalancedText(line, ref i, false);
+				if (i < length && line[i] == '}')
+					++i;
+			}
+			else if (c == '[')
+			{
+				ScanRegularBalancedText(line, ref i, false);
+				if (i < length && line[i] == ']')
+					++i;
+			}
+			else if (c == '(')
+			{
+				ScanRegularBalancedText(line, ref i, false);
+				if (i < length && line[i] == ')')
+					++i;
+			}
+		}
+		
+		return i > startAt;
 	}
 }
 

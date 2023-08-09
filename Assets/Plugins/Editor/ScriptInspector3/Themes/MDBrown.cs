@@ -1,9 +1,9 @@
 ﻿/* SCRIPT INSPECTOR 3
- * version 3.0.26, February 2020
- * Copyright © 2012-2020, Flipbook Games
+ * version 3.0.33, May 2022
+ * Copyright © 2012-2022, Flipbook Games
  * 
- * Unity's legendary editor for C#, UnityScript, Boo, Shaders, and text,
- * now transformed into an advanced C# IDE!!!
+ * Script Inspector 3 - World's Fastest IDE for Unity
+ * 
  * 
  * Follow me on http://twitter.com/FlipbookGames
  * Like Flipbook Games on Facebook http://facebook.com/FlipbookGames
@@ -34,6 +34,7 @@ namespace ScriptInspector.Themes
 			hyperlinks              = Color.blue,                           // Didn't change
 			
 			keywords                = new Color (0.98f, 0.23f, 0.01f),		// Red
+			controlKeywords         = new Color (0.98f, 0.23f, 0.01f),		// Red
 			constants               = new Color (1.0f, 0.14f, 1.0f),
 			strings                 = new Color (1.0f, 0.14f, 1.0f),		// Pink
 			builtInLiterals         = new Color (0.98f, 0.23f, 0.01f),		// Red

@@ -1,9 +1,9 @@
 ﻿/* SCRIPT INSPECTOR 3
- * version 3.0.26, February 2020
- * Copyright © 2012-2020, Flipbook Games
+ * version 3.0.33, May 2022
+ * Copyright © 2012-2022, Flipbook Games
  * 
- * Unity's legendary editor for C#, UnityScript, Boo, Shaders, and text,
- * now transformed into an advanced C# IDE!!!
+ * Script Inspector 3 - World's Fastest IDE for Unity
+ * 
  * 
  * Follow me on http://twitter.com/FlipbookGames
  * Like Flipbook Games on Facebook http://facebook.com/FlipbookGames
@@ -37,13 +37,14 @@ public class FGListPopup : FGPopupWindow
 	private const int maxListItems = 9;
 	private static float listItemHeight = 19f;
 	private bool isSizeSet;
+	private float currentWidth;
 
 	public static string NameOf(SymbolDefinition symbol)
 	{
 		var name = symbol.name;
 		
 		if (shortAttributeNames && symbol.kind == SymbolKind.Class &&
-			symbol.name.EndsWith("Attribute", StringComparison.Ordinal) && symbol.name != "Attribute")
+			symbol.name.FastEndsWith("Attribute") && symbol.name != "Attribute")
 		{
 			name = name.Substring(0, name.Length - "Attribute".Length);
 		}
@@ -259,7 +260,7 @@ public class FGListPopup : FGPopupWindow
 					{
 						--exactMatchItemIndex;
 						var exactMatchItemName = filteredData[exactMatchItemIndex].name;
-						if (currentItemName.StartsWith(exactMatchItemName, StringComparison.Ordinal) && exactMatchItemName.Length < currentItemName.Length)
+						if (currentItemName.FastStartsWith(exactMatchItemName) && exactMatchItemName.Length < currentItemName.Length)
 						{
 							currentItem = exactMatchItemIndex;
 							currentItemName = exactMatchItemName;
@@ -327,11 +328,14 @@ public class FGListPopup : FGPopupWindow
 			SymbolKind.EnumMember, SymbolKind.Property, SymbolKind.Event, SymbolKind.Indexer,
 			SymbolKind.Method, SymbolKind.Constructor, SymbolKind.Destructor, SymbolKind.Operator,
 			SymbolKind.Accessor, SymbolKind.Parameter, SymbolKind.CatchParameter, SymbolKind.Variable,
-			SymbolKind.ForEachVariable, SymbolKind.FromClauseVariable, SymbolKind.TypeParameter,
-			SymbolKind.Label };
+			SymbolKind.CaseVariable, SymbolKind.TupleDeconstructVariable,
+			SymbolKind.OutVariable, SymbolKind.IsVariable, SymbolKind.ForEachVariable, SymbolKind.FromClauseVariable,
+			SymbolKind.TypeParameter, SymbolKind.Label };
 		var oneForAll = new HashSet<SymbolKind> { SymbolKind.Namespace, SymbolKind.EnumMember, SymbolKind.Parameter,
-			SymbolKind.CatchParameter, SymbolKind.Variable, SymbolKind.ForEachVariable, SymbolKind.FromClauseVariable,
-			SymbolKind.TypeParameter, SymbolKind.Label, SymbolKind.LocalConstant, SymbolKind.Constructor, SymbolKind.Destructor };
+			SymbolKind.CatchParameter, SymbolKind.Variable, SymbolKind.CaseVariable, SymbolKind.OutVariable,
+			SymbolKind.IsVariable, SymbolKind.ForEachVariable, SymbolKind.FromClauseVariable,
+			SymbolKind.TupleDeconstructVariable, SymbolKind.TypeParameter, SymbolKind.Label, SymbolKind.LocalConstant,
+			SymbolKind.Constructor, SymbolKind.Destructor };
 		symbolIcons = new Texture2D[System.Enum.GetNames(typeof(SymbolKind)).Length, 3];
 		for (var i = 0; i < kinds.Length; i++)
 		{
@@ -340,6 +344,14 @@ public class FGListPopup : FGPopupWindow
 				kind = "Constant";
 			else if (kind == "EnumMember")
 				kind = "EnumItem";
+			else if (kind == "CaseVariable")
+				kind = "Variable";
+			else if (kind == "TupleDeconstructVariable")
+				kind = "Variable";
+			else if (kind == "OutVariable")
+				kind = "Variable";
+			else if (kind == "IsVariable")
+				kind = "Variable";
 			var index = (int) kinds[i];
 			symbolIcons[index, 0] = FGTextEditor.LoadEditorResource<Texture2D>("Symbol Icons/VSObject_" + kind + ".png");
 			if (oneForAll.Contains(kinds[i]))
@@ -355,11 +367,11 @@ public class FGListPopup : FGPopupWindow
 			
 #if SI3_WARNINGS
 			if (symbolIcons[index, 0] == null)
-				Debug.LogWarning("No icon for " + kind);
+				Debug.LogWarning("No icon for " + kind + " - " + kinds[i].ToString());
 			if (symbolIcons[index, 1] == null)
-				Debug.LogWarning("No icon for protected " + kind);
+				Debug.LogWarning("No icon for protected " + kind + " - " + kinds[i].ToString());
 			if (symbolIcons[index, 2] == null)
-				Debug.LogWarning("No icon for private " + kind);
+				Debug.LogWarning("No icon for private " + kind + " - " + kinds[i].ToString());
 #endif
 		}
 		symbolIcons[(int) SymbolKind._Keyword, 0] = keywordIcon = FGTextEditor.LoadEditorResource<Texture2D>("Symbol Icons/Keyword.png");
@@ -436,6 +448,11 @@ public class FGListPopup : FGPopupWindow
 			if (onToken != null && (
 				onToken.tokenKind == SyntaxToken.Kind.StringLiteral ||
 				onToken.tokenKind == SyntaxToken.Kind.VerbatimStringLiteral ||
+				onToken.tokenKind == SyntaxToken.Kind.InterpolatedStringWholeLiteral ||
+				onToken.tokenKind == SyntaxToken.Kind.InterpolatedStringStartLiteral ||
+				onToken.tokenKind == SyntaxToken.Kind.InterpolatedStringMidLiteral ||
+				onToken.tokenKind == SyntaxToken.Kind.InterpolatedStringEndLiteral ||
+				onToken.tokenKind == SyntaxToken.Kind.InterpolatedStringFormatLiteral ||
 				onToken.tokenKind == SyntaxToken.Kind.CharLiteral ||
 				onToken.tokenKind == SyntaxToken.Kind.CharLiteral ||
 				onToken.tokenKind >= SyntaxToken.Kind.Preprocessor &&
@@ -466,6 +483,7 @@ public class FGListPopup : FGPopupWindow
 		Rect position = new Rect(screenPoint.x - 24f - editor.charSize.x * typedInPart.Length,
 			flipped ? screenPoint.y - 21f : screenPoint.y, 1f, 21f);
 		window.dropDownRect = new Rect(position.x, flipped ? position.y + 21f : position.y - editor.charSize.y, 1f, editor.charSize.y);
+		window.currentWidth = position.width;
 		window.position = position;
 		window.TypedInPart = typedInPart;
 
@@ -492,7 +510,10 @@ public class FGListPopup : FGPopupWindow
 			var kind = symbol.kind;
 			if (kind == SymbolKind.Variable || kind == SymbolKind.Parameter || kind == SymbolKind.LocalConstant ||
 				kind == SymbolKind.Label ||
-				kind == SymbolKind.CatchParameter || kind == SymbolKind.FromClauseVariable || kind == SymbolKind.ForEachVariable)
+				kind == SymbolKind.CatchParameter || kind == SymbolKind.FromClauseVariable ||
+				kind == SymbolKind.ForEachVariable || kind == SymbolKind.CaseVariable ||
+				kind == SymbolKind.OutVariable || kind == SymbolKind.IsVariable ||
+				kind == SymbolKind.TupleDeconstructVariable)
 			{
 				var nameOf = NameOf(symbol);
 				var recentIndex = recentCompletions.IndexOf(nameOf);
@@ -621,15 +642,15 @@ public class FGListPopup : FGPopupWindow
 			Event.current.Use();
 		}
 
-		scrollViewRect = new Rect(offset.x, offset.y, position.width, position.height);
-		GUI.Label(scrollViewRect, GUIContent.none, textEditor.styles.listFrameStyle);
+		scrollViewRect = new Rect(offset.x, offset.y, currentWidth, position.height);
+		FGTextEditor.FillRect(scrollViewRect, textEditor.styles.listFrameColor);
 
 		scrollViewRect.xMin++;
 		scrollViewRect.yMin++;
 		scrollViewRect.xMax--;
 		scrollViewRect.yMax--;
 
-		GUI.Label(scrollViewRect, GUIContent.none, textEditor.styles.listBgStyle);
+		FGTextEditor.FillRect(scrollViewRect, textEditor.styles.listBgColor);
 
 		var rcScrollBar = new Rect(scrollViewRect);
 		rcScrollBar.xMin = rcScrollBar.xMax - 15f;
@@ -692,12 +713,16 @@ public class FGListPopup : FGPopupWindow
 					itemContent.text += "<>";
 				width = Mathf.Max(width, listItemStyle.CalcSize(itemContent).x);
 			}
-			var rc = position;
+			var pos = position;
+			pos.width = currentWidth;
+			var rc = pos;
 			rc.width = Mathf.Max(rc.width, width + 24f + (filteredData.Count > maxListItems ? 21f : 2f));
 			rc.height = listItemHeight * Mathf.Min(maxListItems, filteredData.Count) + 2f;
-			if (!isSizeSet || rc != position)
+			if (!isSizeSet || rc != pos)
 			{
-				SetSize(rc.width, rc.height);
+				currentWidth = rc.width;
+				pos = SetSize(rc.width, rc.height);
+				position = pos;
 				isSizeSet = true;
 			}
 
@@ -706,7 +731,7 @@ public class FGListPopup : FGPopupWindow
 			System.Text.StringBuilder sb = null;
 			for (var i = Mathf.Min(filteredData.Count, scrollPosition + maxListItems); --i >= scrollPosition; )
 			{
-				var rcItem = new Rect(2f, 1f + listItemHeight * (i - scrollPosition), position.width - 3f, listItemHeight);
+				var rcItem = new Rect(2f, 1f + listItemHeight * (i - scrollPosition), pos.width - 3f, listItemHeight);
 				if (filteredData.Count > maxListItems)
 					rcItem.xMax -= 15f;
 
@@ -767,7 +792,8 @@ public class FGListPopup : FGPopupWindow
 					itemContent.text += "<>";
 				rcItem.x += offset.x;
 				rcItem.y += offset.y;
-				listItemStyle.Draw(rcItem, itemContent, false, focus, focus, on);
+				if (Event.current.type == EventType.Repaint)
+					listItemStyle.Draw(rcItem, itemContent, false, focus, focus, on);
 			}
 			
 			EditorGUIUtility.SetIconSize(Vector2.zero);
@@ -811,7 +837,7 @@ public class FGListPopup : FGPopupWindow
 
 		if (Event.current.type == EventType.KeyDown)
 		{
-			var acceptWith = currentItem < 0 ? "\t" : "\t\n {}[]().,:;+-*/%&|^!~=<>?@#\'\"\\";
+			var acceptWith = currentItem < 0 ? "\t" : "\t\n {}[]().,:;+-*/%&|^!~=<>?@\'\"\\";
 			if (topSuggestion != null && currentItem >= 0 /*&& typedInPart == ""*/)
 			{
 				var currentSymbol = filteredData[currentItem];

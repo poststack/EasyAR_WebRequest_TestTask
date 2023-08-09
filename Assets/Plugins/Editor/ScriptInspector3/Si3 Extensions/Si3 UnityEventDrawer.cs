@@ -1,9 +1,9 @@
 ﻿/* SCRIPT INSPECTOR 3
- * version 3.0.26, February 2020
- * Copyright © 2012-2020, Flipbook Games
+ * version 3.0.33, May 2022
+ * Copyright © 2012-2022, Flipbook Games
  * 
- * Unity's legendary editor for C#, UnityScript, Boo, Shaders, and text,
- * now transformed into an advanced C# IDE!!!
+ * Script Inspector 3 - World's Fastest IDE for Unity
+ * 
  * 
  * Follow me on http://twitter.com/FlipbookGames
  * Like Flipbook Games on Facebook http://facebook.com/FlipbookGames
@@ -380,8 +380,8 @@ public class Si3UnityEventDrawer : UnityEventDrawer
 						var parameters = method.GetParameters();
 						foreach (var m in methodGroup.methods)
 						{
-							if (m.IsStatic)
-								continue;
+							//if (m.IsStatic)
+							//	continue;
 							
 							var p = m.GetParameters() ?? new List<ParameterDefinition>();
 							if (p.Count != parameters.Length)

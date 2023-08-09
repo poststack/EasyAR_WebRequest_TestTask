@@ -1,9 +1,9 @@
 ﻿/* SCRIPT INSPECTOR 3
- * version 3.0.26, February 2020
- * Copyright © 2012-2020, Flipbook Games
+ * version 3.0.33, May 2022
+ * Copyright © 2012-2022, Flipbook Games
  * 
- * Unity's legendary editor for C#, UnityScript, Boo, Shaders, and text,
- * now transformed into an advanced C# IDE!!!
+ * Script Inspector 3 - World's Fastest IDE for Unity
+ * 
  * 
  * Follow me on http://twitter.com/FlipbookGames
  * Like Flipbook Games on Facebook http://facebook.com/FlipbookGames
@@ -18,7 +18,8 @@ namespace ScriptInspector
 using UnityEngine;
 using UnityEditor;
 using System.Reflection;
-
+using System.Collections.Generic;
+using System.Collections;
 
 public class FGConsole : EditorWindow
 #if !UNITY_3_5 && !UNITY_4_0
@@ -32,6 +33,9 @@ public class FGConsole : EditorWindow
 	private static FieldInfo errorStyleField;
 	private static FieldInfo warningStyleField;
 	private static FieldInfo logStyleField;
+	private static FieldInfo errorSmallStyleField;
+	private static FieldInfo warningSmallStyleField;
+	private static FieldInfo logSmallStyleField;
 	private static FieldInfo messageStyleField;
 	
 	public readonly static System.Type consoleWindowType;
@@ -57,6 +61,7 @@ public class FGConsole : EditorWindow
 	public static int repaintOnUpdateCounter = 0;
 	
 	private static Font font;
+	private static GUIContent monospacedContentButtonStyle = new GUIContent("Monospaced Font");
 	
 	private static bool openLogEntriesInSi2
 	{
@@ -99,8 +104,11 @@ public class FGConsole : EditorWindow
 			if (consoleConstantsType != null)
 			{
 				errorStyleField = consoleConstantsType.GetField("ErrorStyle", staticMemberFlags);
+				errorSmallStyleField = consoleConstantsType.GetField("ErrorSmallStyle", staticMemberFlags);
 				warningStyleField = consoleConstantsType.GetField("WarningStyle", staticMemberFlags);
+				warningSmallStyleField = consoleConstantsType.GetField("WarningSmallStyle", staticMemberFlags);
 				logStyleField = consoleConstantsType.GetField("LogStyle", staticMemberFlags);
+				logSmallStyleField = consoleConstantsType.GetField("LogSmallStyle", staticMemberFlags);
 				messageStyleField = consoleConstantsType.GetField("MessageStyle", staticMemberFlags);
 			}
 		}
@@ -286,7 +294,6 @@ Click the button below to open the Console window...", MessageType.Info);
 				menu.DropDown(rc);
 			}
 
-#if !UNITY_2019_3_OR_NEWER
 			if (font == null && SISettings.monospacedFontConsole)
 			{
 				font = FGTextEditor.LoadEditorResource<Font>("Smooth Fonts/DejaVu Sans Mono.ttf");
@@ -294,8 +301,8 @@ Click the button below to open the Console window...", MessageType.Info);
 			}
 
 			rc.xMin = rc.xMax + 4f;
-			rc.xMax = rc.xMin + 100f;
-			if (SISettings.monospacedFontConsole != GUI.Toggle(rc, SISettings.monospacedFontConsole, "Monospaced Font", EditorStyles.toolbarButton))
+			rc.xMax = rc.xMin + EditorStyles.toolbarButton.CalcSize(monospacedContentButtonStyle).x;
+			if (SISettings.monospacedFontConsole != GUI.Toggle(rc, SISettings.monospacedFontConsole, monospacedContentButtonStyle, EditorStyles.toolbarButton))
 			{
 				SISettings.monospacedFontConsole.Value = !SISettings.monospacedFontConsole;
 				
@@ -306,7 +313,6 @@ Click the button below to open the Console window...", MessageType.Info);
 
 				SetConsoleFont(SISettings.monospacedFontConsole ? font : null);
 			}
-#endif
 		}
 		finally
 		{
@@ -314,31 +320,173 @@ Click the button below to open the Console window...", MessageType.Info);
 		}
 	}
 	
+	private static void SetFontField(FieldInfo field, Font font)
+	{
+		if (field == null)
+			return;
+		GUIStyle style = field.GetValue(null) as GUIStyle;
+		if (style == null)
+			return;
+
+		style.font = font;
+		style.fontSize = font != null ? 11 : 0;
+	}
+	
 	private static void SetConsoleFont(Font font)
 	{
-		GUIStyle style = errorStyleField.GetValue(null) as GUIStyle;
-		if (style != null)
+		SetFontField(errorStyleField, font);
+		SetFontField(errorSmallStyleField, font);
+		SetFontField(warningStyleField, font);
+		SetFontField(warningSmallStyleField, font);
+		SetFontField(logStyleField, font);
+		SetFontField(logSmallStyleField, font);
+		SetFontField(messageStyleField, font);
+	}
+	
+	private struct CallStackTarget
+	{
+		public string guid;
+		public int line;
+		public string functionName;
+	}
+	
+	private class CallStackFrames: CallStackFramesBase
+	{
+		public CallStackFrames(string stackTrace) : base(stackTrace) {}
+	}
+		
+	private class CallStackFramesBase
+	{
+		string stackTrace;
+		public CallStackFramesBase(string stackTrace) { this.stackTrace = stackTrace; }
+		public CallStackFramesEnumerator GetEnumerator() { return new CallStackFramesEnumerator(stackTrace); }
+    }
+	
+	private class CallStackFramesEnumerator : CallStackFramesEnumeratorBase
+	{
+		public CallStackFramesEnumerator(string stackTrace) : base(stackTrace) {}
+	}
+	
+	private class CallStackFramesEnumeratorBase
+	{
+		int index;
+		string[] lines;
+		CallStackTarget current;
+
+		public CallStackFramesEnumeratorBase(string stackTrace)
 		{
-			style.font = font;
-			style.fontSize = font != null ? 11 : 0;
+			lines = stackTrace.Split('\n');
+			index = -1;
+			current = default(CallStackTarget);
 		}
-		style = warningStyleField.GetValue(null) as GUIStyle;
-		if (style != null)
+		public void Reset() { index = -1; }
+
+		public CallStackTarget Current { get { return current; } }
+
+		public bool MoveNext()
 		{
-			style.font = font;
-			style.fontSize = font != null ? 11 : 0;
-		}
-		style = logStyleField.GetValue(null) as GUIStyle;
-		if (style != null)
-		{
-			style.font = font;
-			style.fontSize = font != null ? 11 : 0;
-		}
-		style = messageStyleField.GetValue(null) as GUIStyle;
-		if (style != null)
-		{
-			style.font = font;
-			style.fontSize = font != null ? 11 : 0;
+			while (++index < lines.Length)
+			{
+				var textLine = lines[index];
+				
+				var atAssetsIndex = textLine.IndexOf("(at Assets/");
+				if (atAssetsIndex >= 0)
+				{
+					var lineIndex = textLine.LastIndexOf(':');
+					if (lineIndex <= atAssetsIndex)
+						continue;
+					
+					current.line = 0;
+					for (var i = lineIndex + 1; i < textLine.Length; ++i)
+					{
+						var c = textLine[i];
+						if (c < '0' || c > '9')
+							break;
+						current.line = current.line * 10 + (c - '0');
+					}
+					
+					atAssetsIndex += "(at ".Length;
+					var assetPath = textLine.Substring(atAssetsIndex, lineIndex - atAssetsIndex);
+					
+					current.guid = AssetDatabase.AssetPathToGUID(assetPath);
+					if (!string.IsNullOrEmpty(current.guid))
+					{
+						var functionNameEnd = textLine.IndexOf('(');
+						if (functionNameEnd < 0)
+							continue;
+						current.functionName = textLine.Substring(0, functionNameEnd).TrimEnd(' ');
+
+						return true;
+					}
+				}
+				else
+				{
+					var indexFromFullStackLogging = textLine.IndexOf(" (Mono JIT Code) [");
+					if (indexFromFullStackLogging < 0)
+						continue;
+
+					var fileNameStartIndex = indexFromFullStackLogging + " (Mono JIT Code) [".Length;
+					var fileNameEndIndex = textLine.IndexOf(':', fileNameStartIndex);
+					if (fileNameEndIndex <= fileNameStartIndex)
+						continue;
+
+					var lineStartIndex = fileNameEndIndex + 1;
+					var lineEndIndex = textLine.IndexOf("] ", lineStartIndex);
+					if (lineEndIndex <= lineStartIndex)
+						continue;
+
+					var fileName = textLine.Substring(fileNameStartIndex, fileNameEndIndex - fileNameStartIndex);
+					if (!fileName.EndsWithCS())
+						continue;
+
+					var assets = AssetDatabase.FindAssets(fileName.Substring(0, fileName.Length - ".cs".Length));
+					if (assets == null || assets.Length == 0)
+						continue;
+
+					var end1 = '/' + fileName;
+					var end2 = '\\' + fileName;
+
+					var paths = new List<string>(assets.Length);
+					for (var i = assets.Length; i --> 0; )
+					{
+						var path = AssetDatabase.GUIDToAssetPath(assets[i]);
+						if (path.EndsWith(end1, System.StringComparison.Ordinal) || path.EndsWith(end2, System.StringComparison.Ordinal))
+						{
+							current.guid = assets[i];
+							paths.Add(path);
+						}
+					}
+
+					if (paths.Count == 0)
+						continue;
+					
+					var functionNameStart = lineStartIndex + 2;
+
+					current.line = 0;
+					for (var i = lineStartIndex; i < textLine.Length; ++i)
+					{
+						var c = textLine[i];
+						if (c < '0' || c > '9')
+							break;
+						current.line = current.line * 10 + (c - '0');
+						++functionNameStart;
+					}
+					
+					var functionNameEnd = textLine.IndexOf('(', functionNameStart);
+					if (functionNameEnd - 1 > functionNameStart)
+					{
+						var functionName = textLine.Substring(functionNameStart, functionNameEnd - 1 - functionNameStart);
+						var start = functionName.LastIndexOf(':');
+						if (start > 0)
+							functionName = functionName.Substring(start + 1);
+						current.functionName = functionName;
+					}
+
+					return true;
+				}
+			}
+			
+			return false;
 		}
 	}
 
@@ -361,7 +509,9 @@ Click the button below to open the Console window...", MessageType.Info);
 				int line = (int)logEntryLineField.GetValue(logEntry);
 				string file = (string)logEntryFileField.GetValue(logEntry);
 				string guid = null;
-				if (file.StartsWith("Assets/", System.StringComparison.OrdinalIgnoreCase))
+				
+				file = file.Replace('\\', '/');
+				if (file.StartsWithIgnoreCase("assets/"))
 				{
 					guid = AssetDatabase.AssetPathToGUID(file);
 					if (string.IsNullOrEmpty(guid))
@@ -370,7 +520,7 @@ Click the button below to open the Console window...", MessageType.Info);
 						if (instanceID != 0)
 						{
 							file = AssetDatabase.GetAssetPath(instanceID);
-							if (file.StartsWith("Assets/", System.StringComparison.OrdinalIgnoreCase))
+							if (file.StartsWithIgnoreCase("assets/"))
 								guid = AssetDatabase.AssetPathToGUID(file);
 						}
 					}
@@ -381,7 +531,7 @@ Click the button below to open the Console window...", MessageType.Info);
 					if (instanceID != 0)
 					{
 						file = AssetDatabase.GetAssetPath(instanceID);
-						if (file.StartsWith("Assets/", System.StringComparison.OrdinalIgnoreCase))
+						if (file.StartsWithIgnoreCase("assets/"))
 							guid = AssetDatabase.AssetPathToGUID(file);
 					}
 				}
@@ -391,31 +541,11 @@ Click the button below to open the Console window...", MessageType.Info);
 					string text = (string)consoleActiveTextField.GetValue(console);
 					if (!string.IsNullOrEmpty(text))
 					{
-						string[] lines = text.Split('\n');
-						foreach (string textLine in lines)
+						var frames = new CallStackFramesEnumerator(text);
+						if (frames.MoveNext())
 						{
-							int atAssetsIndex = textLine.IndexOf("(at Assets/");
-							if (atAssetsIndex < 0)
-								continue;
-							
-							int lineIndex = textLine.LastIndexOf(':');
-							if (lineIndex <= atAssetsIndex)
-								continue;
-							line = 0;
-							for (int i = lineIndex + 1; i < textLine.Length; ++i)
-							{
-								char c = textLine[i];
-								if (c < '0' || c > '9')
-									break;
-								line = line * 10 + (c - '0');
-							}
-							
-							atAssetsIndex += "(at ".Length;
-							string assetPath = textLine.Substring(atAssetsIndex, lineIndex - atAssetsIndex);
-							
-							guid = AssetDatabase.AssetPathToGUID(assetPath);
-							if (!string.IsNullOrEmpty(guid))
-								break;
+							line = frames.Current.line;
+							guid = frames.Current.guid;
 						}
 					}
 				}
@@ -433,7 +563,7 @@ Click the button below to open the Console window...", MessageType.Info);
 					else
 					{
 						var assetPath = AssetDatabase.GUIDToAssetPath(guid);
-						if (assetPath.StartsWith("Assets/", System.StringComparison.OrdinalIgnoreCase))
+						if (assetPath.StartsWithIgnoreCase("assets/"))
 						{
 							FGCodeWindow.openInExternalIDE = true;
 							AssetDatabase.OpenAsset(AssetDatabase.LoadMainAssetAtPath(assetPath), line);
@@ -457,40 +587,17 @@ Click the button below to open the Console window...", MessageType.Info);
 			return;
 		
 		GenericMenu codeViewPopupMenu = new GenericMenu();
+		var i = 0;
 
-		string[] lines = text.Split('\n');
-		foreach (string line in lines)
+		foreach (var stackFrame in new CallStackFrames(text))
 		{
-			int atAssetsIndex = line.IndexOf("(at Assets/");
-			if (atAssetsIndex < 0)
-				continue;
-
-			int functionNameEnd = line.IndexOf('(');
-			if (functionNameEnd < 0)
-				continue;
-			string functionName = line.Substring(0, functionNameEnd).TrimEnd(' ');
-
-			int lineIndex = line.LastIndexOf(':');
-			if (lineIndex <= atAssetsIndex)
-				continue;
-			int atLine = 0;
-			for (int i = lineIndex + 1; i < line.Length; ++i)
+			if (!string.IsNullOrEmpty(stackFrame.guid))
 			{
-				char c = line[i];
-				if (c < '0' || c > '9')
-					break;
-				atLine = atLine * 10 + (c - '0');
-			}
-
-			atAssetsIndex += "(at ".Length;
-			string assetPath = line.Substring(atAssetsIndex, lineIndex - atAssetsIndex);
-			string scriptName = assetPath.Substring(assetPath.LastIndexOf('/') + 1);
-
-			string guid = AssetDatabase.AssetPathToGUID(assetPath);
-			if (!string.IsNullOrEmpty(guid))
-			{
+				var assetPath = AssetDatabase.GUIDToAssetPath(stackFrame.guid);
+				var scriptName = assetPath.Substring(assetPath.LastIndexOf('/') + 1);
+				var functionName = stackFrame.functionName != null ? " - " + stackFrame.functionName.Replace(':', '.') : "";
 				codeViewPopupMenu.AddItem(
-					new GUIContent(scriptName + " - " + functionName.Replace(':', '.') + ", line " + atLine),
+					new GUIContent(i + ": " + scriptName + functionName + ", line " + stackFrame.line),
 					false,
 					() => {
 						bool openInSI = (openLogEntriesInSi2 || SISettings.handleOpenAssets) && !SISettings.dontOpenAssets;
@@ -499,17 +606,17 @@ Click the button below to open the Console window...", MessageType.Info);
 						if (openInSI)
 						{
 							FGCodeWindow.addRecentLocationForNextAsset = true;
-							FGCodeWindow.OpenAssetInTab(guid, atLine);
+							FGCodeWindow.OpenAssetInTab(stackFrame.guid, stackFrame.line);
 						}
 						else
 						{
 							FGCodeWindow.openInExternalIDE = true;
-							AssetDatabase.OpenAsset(AssetDatabase.LoadMainAssetAtPath(assetPath), atLine);
+							AssetDatabase.OpenAsset(AssetDatabase.LoadMainAssetAtPath(assetPath), stackFrame.line);
 						}
 					});
+				++i;
 			}
 		}
-
 		if (codeViewPopupMenu.GetItemCount() > 0)
 		{
 			codeViewPopupMenu.AddSeparator(string.Empty);

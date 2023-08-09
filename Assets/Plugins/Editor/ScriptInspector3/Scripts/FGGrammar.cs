@@ -1,9 +1,9 @@
 ﻿/* SCRIPT INSPECTOR 3
- * version 3.0.26, February 2020
- * Copyright © 2012-2020, Flipbook Games
+ * version 3.0.33, May 2022
+ * Copyright © 2012-2022, Flipbook Games
  * 
- * Unity's legendary editor for C#, UnityScript, Boo, Shaders, and text,
- * now transformed into an advanced C# IDE!!!
+ * Script Inspector 3 - World's Fastest IDE for Unity
+ * 
  * 
  * Follow me on http://twitter.com/FlipbookGames
  * Like Flipbook Games on Facebook http://facebook.com/FlipbookGames
@@ -36,6 +36,7 @@ public enum SemanticFlags
 	NamespaceDeclaration,
 	UsingNamespace,
 	UsingAlias,
+	UsingStatic,
 	ExternAlias,
 	ClassDeclaration,
 	TypeParameterDeclaration,
@@ -45,8 +46,12 @@ public enum SemanticFlags
 	ConstantDeclarator,
 	MethodDeclarator,
 	LocalVariableDeclarator,
+	OutVariableDeclarator,
+	IsVariableDeclarator,
+	TupleDeconstructVariableDeclarator,
 	ForEachVariableDeclaration,
 	FromClauseVariableDeclaration,
+	CaseVariableDeclaration,
 	LabeledStatement,
 	CatchExceptionParameterDeclaration,
 	FixedParameterDeclaration,
@@ -104,23 +109,24 @@ public enum SemanticFlags
 	AnonymousMethodBodyScope      = 17 << 8,
 	CodeBlockScope                = 18 << 8,
 	SwitchBlockScope              = 19 << 8,
-	ForStatementScope             = 20 << 8,
-	EmbeddedStatementScope        = 21 << 8,
-	UsingStatementScope           = 22 << 8,
-	LocalVariableInitializerScope = 23 << 8,
-	SpecificCatchScope            = 24 << 8,
-	ArgumentListScope             = 25 << 8,
-	AttributeArgumentsScope       = 26 << 8,
-	MemberInitializerScope        = 27 << 8,
+	SwitchSectionScope            = 20 << 8,
+	ForStatementScope             = 21 << 8,
+	EmbeddedStatementScope        = 22 << 8,
+	UsingStatementScope           = 23 << 8,
+	LocalVariableInitializerScope = 24 << 8,
+	SpecificCatchScope            = 25 << 8,
+	ArgumentListScope             = 26 << 8,
+	AttributeArgumentsScope       = 27 << 8,
+	MemberInitializerScope        = 28 << 8,
 
-	TypeDeclarationScope          = 28 << 8,
-	MethodDeclarationScope        = 29 << 8,
-	AttributesScope               = 30 << 8,
-	AccessorBodyScope             = 31 << 8,
-	AccessorsListScope            = 32 << 8,
-	QueryExpressionScope          = 33 << 8,
-	QueryBodyScope                = 34 << 8,
-	MemberDeclarationScope        = 35 << 8,
+	TypeDeclarationScope          = 29 << 8,
+	MethodDeclarationScope        = 30 << 8,
+	AttributesScope               = 31 << 8,
+	AccessorBodyScope             = 32 << 8,
+	AccessorsListScope            = 33 << 8,
+	QueryExpressionScope          = 34 << 8,
+	QueryBodyScope                = 35 << 8,
+	MemberDeclarationScope        = 36 << 8,
 
 	ScopesEnd,
 }
@@ -163,7 +169,7 @@ public class ParseTree
 				return _resolvedSymbol;
 			}
 			set {
-				if (_resolvedVersion == 0)
+				if (_resolvedVersion == 0 && _resolvedSymbol != null)
 				{
 #if SI3_WARNINGS
 					Debug.LogWarning("Whoops! " + _resolvedSymbol);
@@ -254,6 +260,30 @@ public class ParseTree
 				result = result.parent;
 			return result;
 		}
+		
+		public Node FirstNonTrivialParent()
+		{
+			var result = parent;
+			while (result != null && result.numValidNodes == 1)
+				result = result.parent;
+			if (result != null && result.numValidNodes == 0)
+				result = null;
+			return result;
+		}
+		
+		public Node FirstNonTrivialParent(out int childIndex)
+		{
+			childIndex = this.childIndex;
+			var result = parent;
+			while (result != null && result.numValidNodes == 1)
+			{
+				childIndex = result.childIndex;
+				result = result.parent;
+			}
+			if (result != null && result.numValidNodes == 0)
+				result = null;
+			return result;
+		}
 
 		public override string ToString()
 		{
@@ -331,63 +361,6 @@ public class ParseTree
 			} while (true);
 		}
 
-		public bool HasErrors()
-		{
-			var it = this;
-			do
-			{
-				var node = it as Node;
-				if (node == null)
-				{
-					if (it.syntaxError != null)
-						return true;
-					
-					if (it == this)
-						return false;
-
-					var next = it.nextSibling;
-					while (next == null || next.childIndex >= next.parent.numValidNodes)
-					{
-						it = it.parent;
-						if (it == this)
-							return false;
-						next = it.nextSibling;
-					}
-					
-					it = next;
-					continue;
-				}
-				
-				it = node.FirstChild;
-				while (it != null && it.childIndex < node.numValidNodes)
-				{
-					var nextNode = it as Node;
-					if (nextNode == null)
-					{
-						if (it.syntaxError != null)
-							return true;
-							
-						it = it.nextSibling;
-						continue;
-					}
-					node = nextNode;
-					it = node.FirstChild;
-				}
-				
-				if (node == this)
-					return false;
-				
-				it = node.nextSibling;
-				while (it == null || it.childIndex >= it.parent.numValidNodes)
-				{
-					node = node.parent;
-					if (node == this)
-						return false;
-					it = node.nextSibling;
-				}
-			} while (true);
-		}
-		
 		public abstract bool IsLit(string litText);
 		
 		public Leaf GetFirstLeaf() { return GetFirstLeaf(true); }
@@ -504,6 +477,11 @@ public class ParseTree
 		public override Leaf GetFirstLeaf(bool validNodesOnly)
 		{
 			return this;
+		}
+
+		public bool HasErrors()
+		{
+			return syntaxError != null;
 		}
 	}
 
@@ -965,6 +943,60 @@ public class ParseTree
 			return node;
 		}
 
+		public bool HasErrors()
+		{
+			BaseNode it = this;
+			do
+			{
+				var node = it as Node;
+				if (node == null)
+				{
+					if (it.syntaxError != null)
+						return true;
+
+					var next = it.nextSibling;
+					while (next == null || next.childIndex >= next.parent.numValidNodes)
+					{
+						it = it.parent;
+						if (it == this)
+							return false;
+						next = it.nextSibling;
+					}
+					
+					it = next;
+					continue;
+				}
+				
+				it = node.FirstChild;
+				while (it != null && it.childIndex < node.numValidNodes)
+				{
+					var nextNode = it as Node;
+					if (nextNode == null)
+					{
+						if (it.syntaxError != null)
+							return true;
+							
+						it = it.nextSibling;
+						continue;
+					}
+					node = nextNode;
+					it = node.FirstChild;
+				}
+				
+				if (node == this)
+					return false;
+				
+				it = node.nextSibling;
+				while (it == null || it.childIndex >= it.parent.numValidNodes)
+				{
+					node = node.parent;
+					if (node == this)
+						return false;
+					it = node.nextSibling;
+				}
+			} while (true);
+		}
+		
 		public BaseNode FindChildByName(string name)
 		{
 			for (var child = firstChild; child != null && child.childIndex < numValidNodes; child = child.nextSibling)
@@ -1248,6 +1280,20 @@ public abstract class FGGrammar
 		public override string GetErrorMessage()
 		{
 			return "Unexpected token! Expected " + lookahead.ToString(parser);
+		}
+	}
+	
+	public class IntegerConstantIsTooLargeErrorMessage : ErrorMessageProvider
+	{
+		public static readonly IntegerConstantIsTooLargeErrorMessage Instance = new IntegerConstantIsTooLargeErrorMessage();
+		
+		public IntegerConstantIsTooLargeErrorMessage()
+			: base(null, null)
+		{}
+		
+		public override string GetErrorMessage()
+		{
+			return "Integer constant is too large";
 		}
 	}
 	
@@ -2265,6 +2311,7 @@ public abstract class FGGrammar
 
 	protected class If : Opt
 	{
+		protected readonly string currentTokenText;
 		protected readonly Predicate<IScanner> predicate;
 		protected readonly Node nodePredicate;
 		protected readonly bool debug;
@@ -2279,6 +2326,14 @@ public abstract class FGGrammar
 		public If(Node pred, Node node, bool debug = false)
 			: base(node)
 		{
+			nodePredicate = pred;
+			this.debug = debug;
+		}
+
+		public If(string currentText, Node pred, Node node, bool debug = false)
+			: base(node)
+		{
+			currentTokenText = currentText;
 			nodePredicate = pred;
 			this.debug = debug;
 		}
@@ -2310,7 +2365,9 @@ public abstract class FGGrammar
 				return predicate(scanner);
 			else if (nodePredicate != null)
 			{
-				return scanner.Lookahead(nodePredicate);//, new GoalAdapter());
+				if (currentTokenText != null && scanner.Current.text != currentTokenText)
+					return false;
+				return scanner.Lookahead(nodePredicate);
 			}
 			return false;
 		}
@@ -2654,6 +2711,11 @@ public abstract class FGGrammar
 			nts.Add(nt, rule);
 			rules.Add(rule);
 		}
+		
+		public void Add(Id nt, Node rhs)
+		{
+			Add(new Rule(nt, rhs));
+		}
 
 		public void InitializeGrammar()
 		{
@@ -2663,11 +2725,8 @@ public abstract class FGGrammar
 
 			foreach (Lit lit in EnumerateLitNodes())
 			{
-				if (lits.Contains(lit.body))
-					continue;
-				
-				lits.Add(lit.body);
-				t.Add(lit.body);
+				if (lits.Add(lit.body))
+					t.Add(lit.body);
 			}
 			foreach (var id in EnumerateIdNodes())
 			{
@@ -2770,13 +2829,32 @@ public abstract class FGGrammar
 			scanner.ErrorGrammarNode = scanner.CurrentGrammarNode;
 
 			while (scanner.CurrentGrammarNode != null)
+			{
+				var line = scanner.CurrentLine();
+				var tokenIndex = scanner.CurrentTokenIndex();
+				var rule = scanner.CurrentGrammarNode;
+				//var node = scanner.CurrentParseTreeNode;
+
 				if (!ParseStep(scanner))
 					break;
+				
+				if (scanner.ErrorMessage == null)
+				{
+					if (/*scanner.CurrentParseTreeNode == node &&*/ scanner.CurrentGrammarNode == rule && scanner.CurrentTokenIndex() == tokenIndex && scanner.CurrentLine() == line)
+					{
+						tryToRecover = false;
+						//Debug.LogError("Cannot continue parsing - stuck at line " + line + ", token index " + tokenIndex);
+						//break;
+					}
+				}
+			}
 
 			//if (scanner.MoveNext())
 			//	Debug.LogWarning(scanner + ": trash at end");
 			return parseTree;
 		}
+
+		public bool tryToRecover = true;
 
 		public bool ParseStep(IScanner scanner)
 		{
@@ -2848,11 +2926,17 @@ public abstract class FGGrammar
 						cpt.InvalidateFrom(cpt.LastValid.childIndex);
 				}
 
-				if (scanner.CurrentGrammarNode != null)
+				if (!tryToRecover)
+				{
+					tryToRecover = true;
+					scanner.CurrentGrammarNode = null;
+				}						
+				else if (scanner.CurrentGrammarNode != null)
 				{
 					int numSkipped;
 					scanner.CurrentGrammarNode = scanner.CurrentGrammarNode.Recover(scanner, out numSkipped);
 				}
+
 				if (scanner.CurrentGrammarNode == null)
 				{
 					if (token.parent != null)
@@ -3008,6 +3092,11 @@ public abstract class FGGrammar
 
 		// right hand side subtree.
 		protected Node rhs;
+		
+		public Rule(Id nt, Node rhs)
+			: this(nt.GetName(), rhs)
+		{
+		}
 
 		public Rule(string nt, Node rhs)
 		{

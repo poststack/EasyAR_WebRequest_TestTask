@@ -1,9 +1,9 @@
 ﻿/* SCRIPT INSPECTOR 3
- * version 3.0.26, February 2020
- * Copyright © 2012-2020, Flipbook Games
+ * version 3.0.33, May 2022
+ * Copyright © 2012-2022, Flipbook Games
  * 
- * Unity's legendary editor for C#, UnityScript, Boo, Shaders, and text,
- * now transformed into an advanced C# IDE!!!
+ * Script Inspector 3 - World's Fastest IDE for Unity
+ * 
  * 
  * Follow me on http://twitter.com/FlipbookGames
  * Like Flipbook Games on Facebook http://facebook.com/FlipbookGames
@@ -41,10 +41,9 @@ public class TabSwitcher : FGPopupWindow
 	
 	public static TabSwitcher Create(bool selectNext)
 	{
-		if (trueFocusedWindow)
+		if (trueFocusedWindow != null)
 		{
 			trueFocusedWindow.Focus();
-			trueFocusedWindow = null;
 		}
 
 		guids = FGCodeWindow.GetGuidHistory();
@@ -68,18 +67,19 @@ public class TabSwitcher : FGPopupWindow
 		var height = itemHeight * numRows;
 		var width = lastWidth;
 		
-		owner = EditorWindow.focusedWindow;
+		owner = EditorWindow.focusedWindow != null ? EditorWindow.focusedWindow : trueFocusedWindow;
+		if (!owner)
+		{
+			//Debug.LogWarning("No owner!!!");
+			return null;
+		}
+		trueFocusedWindow = null;
+		
 		var center = owner.position.center;
 		Rect position = new Rect((int)(center.x - 0.5f * width), (int)(center.y - height * 0.5f), width, height);
 		
 		var window = CreatePopup<TabSwitcher>();
 		window.hideFlags = HideFlags.HideAndDontSave;
-		
-#if UNITY_4_0 || UNITY_4_1 || UNITY_4_2 || UNITY_4_3 || UNITY_4_4 || UNITY_4_5 || UNITY_4_6 || UNITY_4_7 || UNITY_5_0
-		window.title = "";
-#else
-		window.titleContent.text = "";
-#endif
 		window.minSize = Vector2.one;
 		
 		window.position = position;

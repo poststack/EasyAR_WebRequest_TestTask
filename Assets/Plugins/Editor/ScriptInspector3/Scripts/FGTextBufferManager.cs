@@ -1,9 +1,9 @@
 ﻿/* SCRIPT INSPECTOR 3
- * version 3.0.26, February 2020
- * Copyright © 2012-2020, Flipbook Games
+ * version 3.0.33, May 2022
+ * Copyright © 2012-2022, Flipbook Games
  * 
- * Unity's legendary editor for C#, UnityScript, Boo, Shaders, and text,
- * now transformed into an advanced C# IDE!!!
+ * Script Inspector 3 - World's Fastest IDE for Unity
+ * 
  * 
  * Follow me on http://twitter.com/FlipbookGames
  * Like Flipbook Games on Facebook http://facebook.com/FlipbookGames
@@ -179,6 +179,14 @@ public class FGTextBufferManager : ScriptableObject
 				Debug.LogWarning("Failed to resolve 'multiple managers'. :(");
 			}
 		}
+		
+		var script = MonoScript.FromScriptableObject(this);
+		var path = AssetDatabase.GetAssetPath(script);
+		if (string.IsNullOrEmpty(path))
+			path = "Assets/Plugins/Editor/ScriptInspector3/Scripts/FGTextBufferManager.cs";
+		path = System.IO.Path.GetDirectoryName(System.IO.Path.GetDirectoryName(path));
+		path = System.IO.Path.Combine(path, ".gitignore");
+		try { System.IO.File.WriteAllText(path, "*"); } catch {};
 	}
 	
 	static void CurrentDomain_DomainUnload(object sender, EventArgs e)
@@ -605,7 +613,7 @@ public class FGTextBufferManager : ScriptableObject
 	
 	public static FGTextBuffer TryGetBuffer(string assetPath)
 	{
-		if (!assetPath.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+		if (!assetPath.StartsWithIgnoreCase("assets/"))
 			return null;
 		
 		string guid = AssetDatabase.AssetPathToGUID(assetPath);
@@ -746,9 +754,9 @@ public class FGTextBufferManager : ScriptableObject
 
 			foreach (string imported in importedAssets)
 			{
-				if (imported.EndsWith(".js", StringComparison.OrdinalIgnoreCase) ||
-					imported.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) ||
-					imported.EndsWith(".boo", StringComparison.OrdinalIgnoreCase))
+				if (imported.EndsWithJS() ||
+					imported.EndsWithCS() ||
+					imported.EndsWithBoo())
 				{
 					if (!Array.Exists(movedAssets, (string path) => imported == path))
 					{
@@ -768,9 +776,9 @@ public class FGTextBufferManager : ScriptableObject
 
 			for (int i = 0; i < movedAssets.Length; ++i)
 			{
-				if (movedAssets[i].EndsWith(".js", StringComparison.OrdinalIgnoreCase) ||
-					movedAssets[i].EndsWith(".cs", StringComparison.OrdinalIgnoreCase) ||
-					movedAssets[i].EndsWith(".boo", StringComparison.OrdinalIgnoreCase))
+				if (movedAssets[i].EndsWithJS() ||
+					movedAssets[i].EndsWithCS() ||
+					movedAssets[i].EndsWithBoo())
 				{
 					Instance().OnAssetMoved(movedAssets[i]);
 				}
@@ -830,7 +838,7 @@ public class FGTextBufferManager : ScriptableObject
 	
 	public void OnAssetReimported(string assetPath)
 	{
-		if (!assetPath.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+		if (!assetPath.StartsWithIgnoreCase("assets/"))
 			return;
 		
 		string guid = AssetDatabase.AssetPathToGUID(assetPath);
@@ -843,7 +851,7 @@ public class FGTextBufferManager : ScriptableObject
 
 	public void OnAssetMoved(string assetPath)
 	{
-		if (!assetPath.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+		if (!assetPath.StartsWithIgnoreCase("assets/"))
 			return;
 		
 		string guid = AssetDatabase.AssetPathToGUID(assetPath);

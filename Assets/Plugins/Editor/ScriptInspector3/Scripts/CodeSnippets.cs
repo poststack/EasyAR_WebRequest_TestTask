@@ -1,9 +1,9 @@
 ﻿/* SCRIPT INSPECTOR 3
- * version 3.0.26, February 2020
- * Copyright © 2012-2020, Flipbook Games
+ * version 3.0.33, May 2022
+ * Copyright © 2012-2022, Flipbook Games
  * 
- * Unity's legendary editor for C#, UnityScript, Boo, Shaders, and text,
- * now transformed into an advanced C# IDE!!!
+ * Script Inspector 3 - World's Fastest IDE for Unity
+ * 
  * 
  * Follow me on http://twitter.com/FlipbookGames
  * Like Flipbook Games on Facebook http://facebook.com/FlipbookGames
@@ -240,6 +240,14 @@ class CodeSnippets : AssetPostprocessor
 				expanded = expanded.Remove(index, end - index + 2);
 				continue;
 				
+			case "ValidAsTypeMember":
+				if (expected != null && !(
+						expected.Matches(CsGrammar.Instance.tokenClassBody)
+						|| expected.Matches(CsGrammar.Instance.tokenStructBody)))
+					return false;
+				expanded = expanded.Remove(index, end - index + 2);
+				continue;
+				
 			case "ValidAsStructMember":
 				if (expected != null && !expected.Matches(CsGrammar.Instance.tokenStructBody))
 					return false;
@@ -292,7 +300,7 @@ class CodeSnippets : AssetPostprocessor
 				++index;
 			if (index == 0)
 			{
-				if (expanded.StartsWith("!=", System.StringComparison.Ordinal) || expanded.StartsWith("==", System.StringComparison.Ordinal))
+				if (expanded.FastStartsWith("!=") || expanded.FastStartsWith("=="))
 					index = 2;
 				else
 					return false;
@@ -311,8 +319,10 @@ class CodeSnippets : AssetPostprocessor
 		var managerScript = MonoScript.FromScriptableObject(FGTextBufferManager.Instance());
 		if (!managerScript)
 			return null;
-		var path = System.IO.Path.GetDirectoryName(System.IO.Path.GetDirectoryName(AssetDatabase.GetAssetPath(managerScript)));
-		return path + "/CodeSnippets/";
+		var path = AssetDatabase.GetAssetPath(managerScript);
+		path = path.Substring(0, path.LastIndexOf('/', path.LastIndexOf('/') - 1));
+		path = path + "/CodeSnippets/";
+		return path;
 	}
 	
 	private static void Reload()

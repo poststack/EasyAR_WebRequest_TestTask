@@ -1,9 +1,9 @@
 ﻿/* SCRIPT INSPECTOR 3
- * version 3.0.26, February 2020
- * Copyright © 2012-2020, Flipbook Games
+ * version 3.0.33, May 2022
+ * Copyright © 2012-2022, Flipbook Games
  * 
- * Unity's legendary editor for C#, UnityScript, Boo, Shaders, and text,
- * now transformed into an advanced C# IDE!!!
+ * Script Inspector 3 - World's Fastest IDE for Unity
+ * 
  * 
  * Follow me on http://twitter.com/FlipbookGames
  * Like Flipbook Games on Facebook http://facebook.com/FlipbookGames
@@ -61,7 +61,7 @@ class GenerateUnityMagicMethod : ISnippetProvider
 		
 		private static string GetDisplayName(string signature)
 		{
-			if (signature.StartsWith("IEnumerator", System.StringComparison.Ordinal))
+			if (signature.FastStartsWith("IEnumerator"))
 				return "IEnumerator {0}(...)";
 			else
 				return "{0}(...)";
@@ -127,7 +127,7 @@ class GenerateUnityMagicMethod : ISnippetProvider
 			return signature.Substring(openIndex + 1, signature.Length - openIndex - 2);
 		}
 		
-		public bool IsCoroutine { get { return signature.StartsWith("IEnumerator", System.StringComparison.Ordinal); } }
+		public bool IsCoroutine { get { return signature.FastStartsWith("IEnumerator"); } }
 	}
 	
 	private static List<SnippetCompletion> monoBehaviourMagicMethods = new List<SnippetCompletion> {

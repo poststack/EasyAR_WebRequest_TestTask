@@ -1,9 +1,9 @@
 ﻿/* SCRIPT INSPECTOR 3
- * version 3.0.26, February 2020
- * Copyright © 2012-2020, Flipbook Games
+ * version 3.0.33, May 2022
+ * Copyright © 2012-2022, Flipbook Games
  * 
- * Unity's legendary editor for C#, UnityScript, Boo, Shaders, and text,
- * now transformed into an advanced C# IDE!!!
+ * Script Inspector 3 - World's Fastest IDE for Unity
+ * 
  * 
  * Follow me on http://twitter.com/FlipbookGames
  * Like Flipbook Games on Facebook http://facebook.com/FlipbookGames
@@ -108,6 +108,8 @@ public class ShaderParser : FGParser
 		}
 		
 		//sw2.Start();
+		if (formatedLine.tokens != null)
+			formatedLine.tokens.Clear();
 		Tokenize(textLine, formatedLine);
 
 //		syntaxTree.SetLineTokens(currentLine, lineTokens);
@@ -204,8 +206,12 @@ public class ShaderParser : FGParser
 	
 	protected override void Tokenize(string line, FGTextBuffer.FormatedLine formatedLine)
 	{
-		var tokens = new List<SyntaxToken>();
-		formatedLine.tokens = tokens;
+		var tokens = formatedLine.tokens;
+		if (tokens == null)
+		{
+			tokens = new List<SyntaxToken>();
+			formatedLine.tokens = tokens;
+		}
 
 		int startAt = 0;
 		int length = line.Length;

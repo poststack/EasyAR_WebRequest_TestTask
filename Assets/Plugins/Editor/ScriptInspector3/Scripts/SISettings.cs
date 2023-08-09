@@ -1,9 +1,9 @@
 ﻿/* SCRIPT INSPECTOR 3
- * version 3.0.26, February 2020
- * Copyright © 2012-2020, Flipbook Games
+ * version 3.0.33, May 2022
+ * Copyright © 2012-2022, Flipbook Games
  * 
- * Unity's legendary editor for C#, UnityScript, Boo, Shaders, and text,
- * now transformed into an advanced C# IDE!!!
+ * Script Inspector 3 - World's Fastest IDE for Unity
+ * 
  * 
  * Follow me on http://twitter.com/FlipbookGames
  * Like Flipbook Games on Facebook http://facebook.com/FlipbookGames
@@ -256,7 +256,8 @@ public static class SISettings
 	public static BoolOption magicMethods_insertWithComments = Create("MagicMethods.InsertWithComments", true);
 	public static BoolOption magicMethods_openingBraceOnSameLine = Create("MagicMethods.OpeningBraceOnSameLine", false);
 	
-	public static BoolOption autoIndent = Create("AutoIndent", true);
+	public static BoolOption autoIndentCode = Create("AutoIndent", true);
+	public static BoolOption autoIndentText = Create("AutoIndentText", false);
 	public static IntOption tabSize = Create("TabSize", 4);
 	public static BoolOption insertSpacesOnTab = Create("InsertSpacesOnTab", false);
 	
@@ -335,7 +336,8 @@ public static class SISettings
 		sb.Append(wordBreak_RightArrowStopsAtWordEnd.ToJson()); sb.Append(",\n");
 		sb.Append(magicMethods_insertWithComments.ToJson()); sb.Append(",\n");
 		sb.Append(magicMethods_openingBraceOnSameLine.ToJson()); sb.Append(",\n");
-		sb.Append(autoIndent.ToJson()); sb.Append(",\n");
+		sb.Append(autoIndentCode.ToJson()); sb.Append(",\n");
+		sb.Append(autoIndentText.ToJson()); sb.Append(",\n");
 		sb.Append(tabSize.ToJson()); sb.Append(",\n");
 		sb.Append(insertSpacesOnTab.ToJson()); sb.Append(",\n");
 		sb.Append(groupFindResultsByFile.ToJson());
@@ -670,7 +672,8 @@ Compile and reload assemblies with " + ctrlR + " or with a 'double-save'.",
 		EditorGUILayout.Space();
 		
 		GUILayout.Label("Tabs", EditorStyles.boldLabel, noLayoutOptions);
-		Draw("Auto-indenting", autoIndent);
+		Draw("Auto-indent code", autoIndentCode);
+		Draw("Auto-indent text asset", autoIndentText);
 		labelWidth = 100f;
 		Draw("Tab size", tabSize, 1, 8);
 		labelWidth = 250f;
