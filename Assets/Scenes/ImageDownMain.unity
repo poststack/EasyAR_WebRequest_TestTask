@@ -565,7 +565,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a4af3d4d3eb1209478e992ffea2b0891, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  imageUrl: https://user74522.clients-cdnnow.ru/static/uploads/mrk6440mark.png
+  imageUrl: ' https://user74522.clients-cdnnow.ru/static/uploads/mrk6564obj.glb '
 --- !u!114 &528410861
 MonoBehaviour:
   m_ObjectHideFlags: 0
