@@ -6,10 +6,17 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
+    path: Assets/Scenes/MenuScene.unity
+    guid: b44659389db76c5498b83b27ccd3d615
+  - enabled: 1
     path: Assets/Scenes/ImageDownMain.unity
     guid: 49c89615304e77c40a8d215bfe86d0da
   - enabled: 1
     path: Assets/Scenes/TargetImage.unity
     guid: 31c57c1ee0091f14f90a467ee6f7e5fb
+  - enabled: 1
+    path: Assets/Samples/EasyAR Sense Unity Plugin/4.6.2+3022.b15d4240/ObjectSensing
+      ImageTracking_TargetOnTheFly/Scenes/ImageTracking_TargetOnTheFly.unity
+    guid: 16e2e6f5cde19294a8d47389fd1d6c30
   m_configObjects:
     EasyAR.Settings: {fileID: 11400000, guid: a1173800ca069ae47b8ae2cb65c0f457, type: 2}

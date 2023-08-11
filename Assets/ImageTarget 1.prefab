@@ -434,6 +434,7 @@ GameObject:
   m_Component:
   - component: {fileID: 2176202637154550125}
   - component: {fileID: 2284495534043678081}
+  - component: {fileID: 7976208657360793080}
   m_Layer: 0
   m_Name: ImageTarget 1
   m_TagString: Untagged
@@ -482,6 +483,20 @@ MonoBehaviour:
     Path: 
   trackerHasSet: 1
   tracker: {fileID: 0}
+--- !u!114 &7976208657360793080
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2172258398407668097}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 91a66258364ce4d4a903afd4eca10a39, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  statusTextObject: {fileID: 0}
+  stringToCheck: StatusUI
 --- !u!1 &4605128873431013641
 GameObject:
   m_ObjectHideFlags: 0
