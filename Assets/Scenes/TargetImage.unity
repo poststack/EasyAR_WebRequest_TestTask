@@ -459,6 +459,7 @@ GameObject:
   m_Component:
   - component: {fileID: 610363492}
   - component: {fileID: 610363491}
+  - component: {fileID: 610363493}
   m_Layer: 0
   m_Name: Manager
   m_TagString: Untagged
@@ -478,8 +479,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 479e55c3794aa544aa6827b64b2803b0, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  _runtimeImport: {fileID: 610363493}
   imageNames: []
-  TargetPrefab: {fileID: 2284495534043678081, guid: 9d14fbcbbcb58a44bac91816fdf28ae6, type: 3}
+  objectsNames: []
+  TargetPrefab: {fileID: 2284495534043678081, guid: f1c979dff30b74a459fa561522af1df0, type: 3}
+  TargetObject: {fileID: 0}
   imageTrackerFrameFilter: {fileID: 56521159}
 --- !u!4 &610363492
 Transform:
@@ -496,6 +500,21 @@ Transform:
   m_Father: {fileID: 0}
   m_RootOrder: 5
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &610363493
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 610363490}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 08d7a8eed67175645b6a531887dbb16a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  files: []
+  loadedObject: {fileID: 0}
+  isObjectRotating: 0
 --- !u!850595691 &757720335
 LightingSettings:
   m_ObjectHideFlags: 0

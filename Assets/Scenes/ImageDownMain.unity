@@ -551,6 +551,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 52caa4290afcde54383515b0462d918b, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  ButtonHandler: {fileID: 528410861}
   HaveInternetObject: {fileID: 1753353549}
   NoInternetObject: {fileID: 333785169}
 --- !u!114 &528410860
@@ -565,7 +566,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a4af3d4d3eb1209478e992ffea2b0891, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  imageUrl: ' https://user74522.clients-cdnnow.ru/static/uploads/mrk6564obj.glb '
+  targetUrl: https://user74522.clients-cdnnow.ru/static/uploads/mrk6440mark.png
+  objectUrl: https://user74522.clients-cdnnow.ru/static/uploads/mrk6564obj.glb
 --- !u!114 &528410861
 MonoBehaviour:
   m_ObjectHideFlags: 0
