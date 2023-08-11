@@ -14,17 +14,24 @@ public class RuntimeImport : MonoBehaviour
 	
 	public GameObject loadedObject;
 	public bool isObjectRotating;
+	public bool isInstantiated= false;
 	
     // Start is called before the first frame update
     void Start()
 	{
 		
 		string[] files = Directory.GetFiles(GlobalVariables.directory, "*.glb");
+		if (files[0] != null)
 		ImportGLTF(files[0]);
     }
 
-	void ImportGLTF(string filepath) {
+	public void ImportGLTF(string filepath) {
 		loadedObject = Importer.LoadFromFile(filepath);
+		if (loadedObject == null)
+		{
+			Debug.Log("no GLb on path");
+			return;
+		}
 		loadedObject .name  = GenerateRandomString(8);
 		loadedObject.SetActive(false);
 		loadedObject.AddComponent<ResetObjectTransform>();	
@@ -35,6 +42,10 @@ public class RuntimeImport : MonoBehaviour
 		{
 			ObjectRotator objectRotator = loadedObject.AddComponent<ObjectRotator>();	
 		}
+		
+		if (isInstantiated)
+			loadedObject.SetActive(true);
+
 	}
 		
 	
