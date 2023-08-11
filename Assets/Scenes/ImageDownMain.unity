@@ -336,6 +336,7 @@ GameObject:
   m_Component:
   - component: {fileID: 96421268}
   - component: {fileID: 96421267}
+  - component: {fileID: 96421269}
   m_Layer: 0
   m_Name: Button Manager
   m_TagString: Untagged
@@ -372,6 +373,20 @@ Transform:
   m_Father: {fileID: 0}
   m_RootOrder: 6
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &96421269
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 96421266}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 06c3aa75e34fb0646a9ac991b1f58b6e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  button: {fileID: 1753353551}
+  scenenameToGo: ARscene
 --- !u!1 &333785169
 GameObject:
   m_ObjectHideFlags: 0
@@ -562,9 +577,8 @@ GameObject:
   - component: {fileID: 528410857}
   - component: {fileID: 528410859}
   - component: {fileID: 528410860}
-  - component: {fileID: 528410861}
   m_Layer: 0
-  m_Name: Manager
+  m_Name: Download Manager
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -597,7 +611,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 52caa4290afcde54383515b0462d918b, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  ButtonHandler: {fileID: 528410861}
+  ButtonHandler: {fileID: 96421269}
   HaveInternetObject: {fileID: 1753353549}
   NoInternetObject: {fileID: 333785169}
 --- !u!114 &528410860
@@ -614,20 +628,6 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   targetUrl: https://user74522.clients-cdnnow.ru/static/uploads/mrk6440mark.png
   objectUrl: https://user74522.clients-cdnnow.ru/static/uploads/mrk6564obj.glb
---- !u!114 &528410861
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 528410855}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 06c3aa75e34fb0646a9ac991b1f58b6e, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  button: {fileID: 1753353551}
-  scenenameToGo: TargetImage
 --- !u!1 &542444573
 GameObject:
   m_ObjectHideFlags: 0
@@ -744,7 +744,7 @@ MonoBehaviour:
   m_faceColor:
     serializedVersion: 2
     rgba: 4294967295
-  m_fontSize: 72
+  m_fontSize: 18.25
   m_fontSizeBase: 24
   m_fontWeight: 400
   m_enableAutoSizing: 1
@@ -1445,7 +1445,7 @@ MonoBehaviour:
   m_OnClick:
     m_PersistentCalls:
       m_Calls:
-      - m_Target: {fileID: 528410861}
+      - m_Target: {fileID: 0}
         m_TargetAssemblyTypeName: ButtonHandler, Assembly-CSharp
         m_MethodName: OnButtonClick
         m_Mode: 1

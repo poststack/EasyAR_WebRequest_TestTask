@@ -9,7 +9,6 @@ using System.Text.RegularExpressions;
 
 public class DeleteFiles : MonoBehaviour
 {
-	private string streamingAssetsPath;
 	
 	[SerializeField]
 	private Button ButtonDeleteFiles;
@@ -19,14 +18,13 @@ public class DeleteFiles : MonoBehaviour
 
 	void Start()
 	{
-		streamingAssetsPath = Application.streamingAssetsPath;
 
 		ButtonDeleteFiles.onClick.AddListener(DeleteAllFiles);
 	}
 
 	public void DeleteAllFiles()
 	{
-		string[] files = Directory.GetFiles(streamingAssetsPath);
+		string[] files = Directory.GetFiles(GlobalVariables.directory);
 
 		string text = "Status:" + "\n";
 		

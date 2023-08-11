@@ -20,11 +20,7 @@ public class ButtonHandler : MonoBehaviour
 	private Coroutine coroutine;
 	
 	
-	//private void Awake()
-	//{
 
-	//	button.onClick.AddListener(OnButtonClick);
-	//}
 
 
 	public void SetNetworkAvailability(bool isAvailable)

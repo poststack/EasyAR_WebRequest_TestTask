@@ -13,6 +13,8 @@ public class Downloader : MonoBehaviour
 	public string targetUrl = "https://user74522.clients-cdnnow.ru/static/uploads/mrk6440mark.png";
 	public string objectUrl = "https://user74522.clients-cdnnow.ru/static/uploads/mrk6564obj.glb";
 	
+
+	
 	
 	void Start()
 	{
@@ -33,9 +35,12 @@ public class Downloader : MonoBehaviour
 
 			if (webRequest.result == UnityWebRequest.Result.Success)
 			{
-				string savePath = Path.Combine(Application.streamingAssetsPath, getFilename(url) );
+				
 
-				// Save the downloaded image to the StreamingAssets folder
+
+				
+				string savePath = Path.Combine(GlobalVariables.directory, getFilename(url) );
+
 				File.WriteAllBytes(savePath, webRequest.downloadHandler.data);
 
 				Debug.Log("Image downloaded and saved to: " + savePath);

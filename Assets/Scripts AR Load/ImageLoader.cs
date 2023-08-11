@@ -3,6 +3,9 @@ using System.IO;
 using System.Collections;
 using System.Collections.Generic;
 using easyar;
+using System.Linq;
+
+
 
 public class ImageLoader : MonoBehaviour
 {
@@ -24,28 +27,27 @@ public class ImageLoader : MonoBehaviour
 
 	void Start()
 	{
-		LoadImagesFromStreamingAssets();
+		LoadImagesFromMemory();
 		LoadTargetModels();
 	}
 
-	void LoadImagesFromStreamingAssets()
+	void LoadImagesFromMemory()
 	{
-		string streamingAssetsPath = Application.streamingAssetsPath;
-		string[] imagePaths = Directory.GetFiles(streamingAssetsPath, "*.png");
+		
+		string[] imagePng = Directory.GetFiles(GlobalVariables.directory, "*.png");
+		string[] imagejpg = Directory.GetFiles(GlobalVariables.directory, "*.jpg");
+		string[] imagejpeg = Directory.GetFiles(GlobalVariables.directory, "*.jpeg");
+
+		string[] imagePaths = imagePng.Concat(imagejpg).ToArray().Concat(imagejpeg).ToArray();
+
 
 		foreach (string imagePath in imagePaths)
 		{
-			string imageName = Path.GetFileNameWithoutExtension(imagePath);
+			string imageName = Path.GetFileName(imagePath);
 			imageNames.Add(imageName);
 		}
 	}
 
-
-	
-
-
-	
-	
 
 
 	void LoadTargetModels()
@@ -54,14 +56,18 @@ public class ImageLoader : MonoBehaviour
 		{
 			Debug.Log("Image name: " + imageName);
 			TargetObject = Instantiate(TargetPrefab,gameObject.transform);
-			TargetObject.ImageFileSource.Path = imageName + ".png";
+			
+			TargetObject.ImageFileSource.PathType = PathType.Absolute;
+			TargetObject.ImageFileSource.Path = Path.Combine(GlobalVariables.directory, imageName );
+			TargetObject.ImageFileSource.Name = imageName;
+
 			TargetObject.Tracker = imageTrackerFrameFilter;
-			StartCoroutine(CheckForModel());
+			StartCoroutine(CheckForModel( TargetObject.gameObject));
 			
 		}
 	}
 	
-	private IEnumerator CheckForModel()
+	private IEnumerator CheckForModel(GameObject targetToStickModel)
 	{
 		while (_runtimeImport.loadedObject == null)
 		{
@@ -69,16 +75,16 @@ public class ImageLoader : MonoBehaviour
 			Debug.Log("переменная  null");
 		}
 
-		LoadARModel();
+		LoadARModel(targetToStickModel);
 	}
 	
-	void LoadARModel()
+	
+	//приделывает модель торта к префабу
+	void LoadARModel(GameObject targetToStickModel)
 	{
-		_runtimeImport.loadedObject.transform.parent = TargetObject.transform.GetChild(0).transform;
-		_runtimeImport.loadedObject.GetComponent<ResetObjectTransform>().Reset();
-		_runtimeImport.loadedObject.SetActive(true);
-		
-
-		
+		GameObject CakeClone = Instantiate(_runtimeImport.loadedObject, targetToStickModel.transform.GetChild(0).transform);
+		CakeClone.GetComponent<ResetObjectTransform>().Reset();
+		CakeClone.SetActive(true);
+				
 	}
 }

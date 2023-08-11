@@ -14,11 +14,12 @@ public class RuntimeImport : MonoBehaviour
 	
 	public GameObject loadedObject;
 	public bool isObjectRotating;
+	
     // Start is called before the first frame update
     void Start()
 	{
-		string streamingAssetsPath = Application.streamingAssetsPath;
-		string[] files = Directory.GetFiles(streamingAssetsPath, "*.glb");
+		
+		string[] files = Directory.GetFiles(GlobalVariables.directory, "*.glb");
 		ImportGLTF(files[0]);
     }
 
@@ -27,7 +28,7 @@ public class RuntimeImport : MonoBehaviour
 		loadedObject .name  = GenerateRandomString(8);
 		loadedObject.SetActive(false);
 		loadedObject.AddComponent<ResetObjectTransform>();	
-		loadedObject.AddComponent<TouchRotationAndScale>();	
+		//loadedObject.AddComponent<TouchRotationAndScale>();	
 
 
 		if (isObjectRotating)
